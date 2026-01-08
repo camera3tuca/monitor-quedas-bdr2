@@ -310,7 +310,7 @@ def plotar_grafico(df_ticker, ticker, empresa, queda_dia, rsi):
 
 st.title("📈 Monitor BDR - Swing Trade")
 
-fuso = pytz.timezone('America/Sao_Paula')
+fuso = pytz.timezone('America/Sao_Paulo')
 hora_br = datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"⏰ Brasil: {hora_br}")
 
