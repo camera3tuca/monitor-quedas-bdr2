@@ -21,7 +21,11 @@ TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
+        brapi_token = st.secrets.get("BRAPI_API_TOKEN", "")
         url = "https://brapi.dev/api/quote/list"
+        if brapi_token:
+            url += f"?token={brapi_token}"
+        
         r = requests.get(url, timeout=30)
         dados = r.json().get('stocks', [])
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
@@ -306,6 +310,24 @@ def plotar_grafico(df_ticker, ticker, empresa, queda_dia, rsi):
     plt.tight_layout()
     return fig
 
+def enviar_whatsapp(mensagem):
+    """Envia mensagem via WhatsApp usando CallMeBot"""
+    try:
+        phone = st.secrets.get("WHATSAPP_PHONE")
+        apikey = st.secrets.get("WHATSAPP_APIKEY")
+        
+        if not phone or not apikey:
+            return False
+        
+        texto_codificado = requests.utils.quote(mensagem)
+        url = f"https://api.callmebot.com/whatsapp.php?phone={phone}&text={texto_codificado}&apikey={apikey}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        
+        response = requests.get(url, headers=headers, timeout=20)
+        return response.status_code == 200
+    except:
+        return False
+
 # ===== UI =====
 
 st.title("📈 Monitor BDR - Swing Trade")
@@ -366,8 +388,6 @@ if rodar_analise:
                     sinais_str = " | ".join(oport['Sinais']) if oport['Sinais'] else "Sem sinais"
                     score_color = "🟢" if oport['Score'] >= 5 else "🟡" if oport['Score'] >= 2 else "🔴"
                     st.write(f"{score_color} **{oport['Ticker']}**: {sinais_str} *(Score: {oport['Score']})*")
-                
-                # Gráficos Top 5
                 st.subheader("📈 Gráficos - Top 5 Maiores Quedas")
                 
                 for i, oport in enumerate(oportunidades[:5], 1):
@@ -401,7 +421,3 @@ if rodar_analise:
                         st.write(f"**Sinais:** {sinais_str}")
             else:
                 st.warning("⚠️ Nenhuma BDR em queda no dia.")
-        else:
-            st.error("❌ Erro ao baixar dados")
-    else:
-        st.error("❌ Nenhuma BDR encontrada")
