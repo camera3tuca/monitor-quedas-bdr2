@@ -3,11 +3,11 @@ import yfinance as yf
 import requests
 import os
 import time
+import urllib.parse
 from datetime import datetime
 import pytz
 
 # --- CONFIGURAÇÕES ---
-# O robô pega as senhas das Variáveis de Ambiente do GitHub
 try:
     WHATSAPP_PHONE = os.environ["WHATSAPP_PHONE"]
     WHATSAPP_APIKEY = os.environ["WHATSAPP_APIKEY"]
@@ -26,30 +26,29 @@ def obter_hora_brasil():
     return datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')
 
 def enviar_whatsapp(mensagem):
-    print(f"Tentando enviar mensagem via POST...")
+    print(f"Tentando enviar mensagem via GET...")
     try:
-        # URL base da API CallMeBot
-        url = "https://api.callmebot.com/whatsapp.php"
+        # Codifica o texto para URL (transforma espaços em %20, etc)
+        texto_codificado = urllib.parse.quote(mensagem)
         
-        # Payload (dados) enviados via POST para suportar mensagens longas
-        payload = {
-            "phone": WHATSAPP_PHONE,
-            "text": mensagem,
-            "apikey": WHATSAPP_APIKEY
-        }
+        # Garante que o telefone não tenha o + (CallMeBot prefere sem)
+        phone_clean = WHATSAPP_PHONE.replace("+", "").strip()
         
-        # Envio com timeout de 30 segundos
-        r = requests.post(url, data=payload, timeout=30)
+        # Monta a URL no formato que funciona no Azure
+        url = f"https://api.callmebot.com/whatsapp.php?phone={phone_clean}&text={texto_codificado}&apikey={WHATSAPP_APIKEY}"
         
-        # 200 = OK, 201 = Created (Mensagem na fila) -> Ambos são sucesso!
+        # Envia via GET
+        r = requests.get(url, timeout=30)
+        
+        # Aceitamos 200 (OK) e 201 (Created/Queued)
         if r.status_code == 200 or r.status_code == 201:
             print("✅ Mensagem enviada com sucesso!")
             return True
         elif r.status_code == 208:
-            print("⚠️ Aviso: CallMeBot bloqueou por ser mensagem duplicada (Spam protection).")
+            print("⚠️ Aviso: Bloqueio de Spam (208). Mensagem repetida.")
             return False
         else:
-            print(f"❌ Erro API CallMeBot: {r.status_code}")
+            print(f"❌ Erro API CallMeBot: {r.status_code} - {r.text}")
             return False
             
     except Exception as e:
@@ -149,7 +148,7 @@ def calcular_tudo(df):
 # --- EXECUÇÃO PRINCIPAL ---
 
 if __name__ == "__main__":
-    print("🤖 Iniciando Bot BDR...")
+    print("🤖 Iniciando Bot BDR (Modo GET)...")
     hora = obter_hora_brasil()
     
     print("1. Buscando lista na BRAPI...")
@@ -191,7 +190,6 @@ if __name__ == "__main__":
             msg += "\n🔗 _Acesse o App para ver os gráficos_"
             
             # --- ID ÚNICO (Anti-Erro 208) ---
-            # Adiciona timestamp no final para tornar a mensagem única
             timestamp_id = int(time.time())
             msg += f"\n_ID: {timestamp_id}_"
             
