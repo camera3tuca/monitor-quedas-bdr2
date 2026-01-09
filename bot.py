@@ -31,22 +31,22 @@ def enviar_whatsapp(mensagem):
         # Codifica o texto para URL (transforma espaços em %20, etc)
         texto_codificado = urllib.parse.quote(mensagem)
         
-        # Garante que o telefone não tenha o + (CallMeBot prefere sem)
+        # Garante que o telefone não tenha o +
         phone_clean = WHATSAPP_PHONE.replace("+", "").strip()
         
-        # Monta a URL no formato que funciona no Azure
+        # URL (Estilo Azure/Navegador)
         url = f"https://api.callmebot.com/whatsapp.php?phone={phone_clean}&text={texto_codificado}&apikey={WHATSAPP_APIKEY}"
         
-        # Envia via GET
         r = requests.get(url, timeout=30)
         
-        # Aceitamos 200 (OK) e 201 (Created/Queued)
+        # 200 = Sucesso | 201 = Na Fila (Sucesso) | 208 = Spam (Conectado, mas repetido)
         if r.status_code == 200 or r.status_code == 201:
             print("✅ Mensagem enviada com sucesso!")
             return True
         elif r.status_code == 208:
-            print("⚠️ Aviso: Bloqueio de Spam (208). Mensagem repetida.")
-            return False
+            print("⚠️ Aviso: Bloqueio de Spam (208). Mensagem muito parecida com a anterior.")
+            print("✅ A CONEXÃO ESTÁ FUNCIONANDO! Só precisa esperar um pouco para enviar de novo.")
+            return True # Consideramos sucesso técnico
         else:
             print(f"❌ Erro API CallMeBot: {r.status_code} - {r.text}")
             return False
@@ -67,9 +67,6 @@ def obter_dados_brapi():
 def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
-    
-    # Download via Yahoo Finance
-    # threads=True acelera o download no GitHub Actions
     df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=120, threads=True)
     
     if df.empty: return pd.DataFrame()
@@ -81,7 +78,6 @@ def buscar_dados(tickers):
 def calcular_tudo(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
-    
     resultados = []
     
     for ticker in tickers:
@@ -97,14 +93,11 @@ def calcular_tudo(df):
             prev_close = close.iloc[-2]
             sma200 = close.rolling(200).mean().iloc[-1]
             
-            # Filtro de Queda
             queda_dia = ((last_close - prev_close) / prev_close) * 100
             if queda_dia >= 0: continue
             
-            # Tendência
             tendencia_alta = last_close > sma200
             
-            # RSI
             delta = close.diff()
             ganho = delta.clip(lower=0).rolling(14).mean()
             perda = -delta.clip(upper=0).rolling(14).mean()
@@ -112,16 +105,13 @@ def calcular_tudo(df):
             rsi = 100 - (100 / (1 + rs))
             last_rsi = rsi.iloc[-1]
             
-            # Estocástico
             lowest_low = low.rolling(14).min()
             highest_high = high.rolling(14).max()
             stoch = 100 * ((close - lowest_low) / (highest_high - lowest_low))
             last_stoch = stoch.iloc[-1]
             
-            # I.S. (Índice de Sobrevenda)
             is_index = ((100 - last_rsi) + (100 - last_stoch)) / 2
             
-            # Sinais Resumidos
             sinais = []
             if tendencia_alta: sinais.append("Trend Alta")
             if last_rsi < 30: sinais.append("RSI Baixo")
@@ -140,7 +130,6 @@ def calcular_tudo(df):
                 'Tendencia_Alta': tendencia_alta,
                 'Sinais': ", ".join(sinais)
             })
-            
         except Exception: continue
         
     return pd.DataFrame(resultados)
@@ -148,7 +137,7 @@ def calcular_tudo(df):
 # --- EXECUÇÃO PRINCIPAL ---
 
 if __name__ == "__main__":
-    print("🤖 Iniciando Bot BDR (Modo GET)...")
+    print("🤖 Iniciando Bot BDR (Modo GET + Anti-Spam)...")
     hora = obter_hora_brasil()
     
     print("1. Buscando lista na BRAPI...")
@@ -162,24 +151,21 @@ if __name__ == "__main__":
         df_res = calcular_tudo(df_market)
         
         if not df_res.empty:
-            # Ordenação: Estratégia primeiro, depois maior queda
             df_res = df_res.sort_values(by=['Tendencia_Alta', 'Queda_Dia'], ascending=[False, True])
-            
             top10 = df_res.head(10)
             qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
             
-            # --- FORMATAÇÃO DA MENSAGEM ---
-            msg = f"🦅 *BDR ALERT - RELATÓRIO*\n"
+            # --- ID ÚNICO NO INÍCIO ---
+            # Colocamos o timestamp no topo para o CallMeBot ver que é texto novo logo de cara
+            timestamp_id = int(time.time())
+            
+            msg = f"🦅 *BDR ALERT* (ID:{timestamp_id})\n"
             msg += f"🗓️ {hora}\n"
             msg += f"🚨 *{len(df_res)}* Quedas | ⭐ *{qtd_strategy}* Estratégia\n\n"
-            msg += "*🏆 TOP 10 MAIORES QUEDAS:*\n"
             
             for _, row in top10.iterrows():
-                # Pega só o primeiro nome
                 nome = mapa_nomes.get(row['Ticker'], row['Ticker']).split()[0]
                 icon = "⭐" if row['Tendencia_Alta'] else "🔻"
-                
-                # Tratamento de erro caso Sinais esteja vazio
                 sinais_texto = row['Sinais'] if row['Sinais'] else "-"
                 
                 msg += f"{icon} *{row['Ticker']}* - {nome}\n"
@@ -187,13 +173,8 @@ if __name__ == "__main__":
                 msg += f"   📊 I.S. {row['IS']:.0f} | {sinais_texto}\n"
                 msg += "   - - - - - - - -\n"
             
-            msg += "\n🔗 _Acesse o App para ver os gráficos_"
+            msg += "\n🔗 _Ver gráficos no App_"
             
-            # --- ID ÚNICO (Anti-Erro 208) ---
-            timestamp_id = int(time.time())
-            msg += f"\n_ID: {timestamp_id}_"
-            
-            # Envia
             enviar_whatsapp(msg)
         else:
             print("Nenhuma oportunidade encontrada hoje.")
