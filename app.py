@@ -9,7 +9,7 @@ from datetime import datetime
 import pytz
 import warnings
 
-# Configuração da Página
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Monitor BDRs - Swing Trade",
     page_icon="📉",
@@ -25,13 +25,12 @@ TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
 # --- FUNÇÕES ---
 
-@st.cache_data(ttl=3600) # Cache por 1 hora
+@st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
         url = "https://brapi.dev/api/quote/list"
         r = requests.get(url, timeout=30)
         dados = r.json().get('stocks', [])
-        # Filtra apenas os tickers que terminam com as terminações de BDR
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
@@ -40,43 +39,22 @@ def obter_dados_brapi():
         st.error(f"Erro ao buscar BRAPI: {e}")
         return [], {}
 
-@st.cache_data(ttl=1800) # Cache por 30 min
+@st.cache_data(ttl=1800)
 def buscar_dados(tickers):
-    if not tickers:
-        return pd.DataFrame()
-
+    if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
-
     try:
-        # Streamlit não mostra o progresso do yfinance, então desativamos
-        df = yf.download(
-            sa_tickers,
-            period=PERIODO,
-            auto_adjust=True,
-            progress=False,
-            timeout=60
-        )
-
-        if df.empty:
-            return pd.DataFrame()
-
-        # Ajuste de MultiIndex se necessário
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
+        if df.empty: return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
-            # Se houver MultiIndex (ex: Price, Ticker), simplifica
-            df.columns = pd.MultiIndex.from_tuples(
-                [(c[0], c[1].replace(".SA", "")) for c in df.columns]
-            )
-
+            df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
         return df.dropna(axis=1, how='all')
-    except Exception as e:
-        st.error(f"Erro ao baixar dados: {str(e)[:100]}")
-        return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
 def calcular_indicadores(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
     
-    # Barra de progresso visual
     progresso = st.progress(0)
     total = len(tickers)
     
@@ -91,18 +69,14 @@ def calcular_indicadores(df):
             ganho = delta.clip(lower=0).rolling(14).mean()
             perda = -delta.clip(upper=0).rolling(14).mean()
             rs = ganho / perda
-            rsi = 100 - (100 / (1 + rs))
-            df_calc[('RSI14', ticker)] = rsi
+            df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
 
             # Médias e Bollinger
             df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
-            df_calc[('EMA50', ticker)] = close.ewm(span=50).mean()
-            
             sma = close.rolling(20).mean()
             std = close.rolling(20).std()
             df_calc[('BB_Lower', ticker)] = sma - (std * 2)
             df_calc[('BB_Upper', ticker)] = sma + (std * 2)
-            df_calc[('BB_Middle', ticker)] = sma
 
             # MACD
             ema_12 = close.ewm(span=12).mean()
@@ -110,12 +84,9 @@ def calcular_indicadores(df):
             macd = ema_12 - ema_26
             signal = macd.ewm(span=9).mean()
             df_calc[('MACD_Hist', ticker)] = macd - signal
-
-            df_calc[('Vol_Med', ticker)] = volume.rolling(20).mean()
-        except:
-            continue
+        except: continue
             
-    progresso.empty() # Remove a barra ao terminar
+    progresso.empty()
     return df_calc
 
 def calcular_fibonacci(df_ticker):
@@ -124,56 +95,50 @@ def calcular_fibonacci(df_ticker):
         high = df_ticker['High'].max()
         low = df_ticker['Low'].min()
         diff = high - low
-        return {
-            '0%': low, '23.6%': low + (diff * 0.236), '38.2%': low + (diff * 0.382),
-            '50%': low + (diff * 0.5), '61.8%': low + (diff * 0.618),
-            '78.6%': low + (diff * 0.786), '100%': high
-        }
+        return {'61.8%': low + (diff * 0.618)} # Só precisamos desta para o sinal
     except: return None
 
 def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
+    
+    # Definição da classificação baseada no score
+    def classificar(s):
+        if s >= 4: return "🟢 Muito Alta"
+        if s >= 2: return "🟢 Alta"
+        if s >= 1: return "🟡 Média"
+        return "⚪ Baixa"
+
     try:
         close = row_ticker.get('Close')
         rsi = row_ticker.get('RSI14')
         macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
-        bb_upper = row_ticker.get('BB_Upper')
         
-        # Lógica simplificada para brevidade
+        # Pontuação
         if pd.notna(rsi) and rsi < 30:
-            sinais.append("🔴 RSI Oversold")
+            sinais.append("RSI Oversold")
             score += 3
         elif pd.notna(rsi) and rsi < 40:
-            sinais.append("⚠️ RSI Fraco")
             score += 1
             
         if pd.notna(macd_hist) and macd_hist > 0:
-            sinais.append("✅ MACD Positivo")
+            sinais.append("MACD Positivo")
             score += 1
             
         if pd.notna(close) and pd.notna(bb_lower):
             if close < bb_lower * 1.02:
-                sinais.append("💪 Suporte BB")
+                sinais.append("Suporte BB")
                 score += 2
 
         fibo = calcular_fibonacci(df_ticker)
-        if fibo:
-            if fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01:
-                sinais.append("🟡 Fibo Golden Zone")
-                score += 2
+        if fibo and (fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01):
+            sinais.append("Fibo Golden Zone")
+            score += 2
 
-        if len(df_ticker) > 2:
-            rsi_trend = df_ticker['RSI14'].tail(3)
-            close_trend = df_ticker['Close'].tail(3)
-            if (close_trend.iloc[-1] < close_trend.iloc[0]) and (rsi_trend.iloc[-1] > rsi_trend.iloc[0]):
-                sinais.append("🔄 Divergência Bullish")
-                score += 3
-
-        return sinais, score
+        return sinais, score, classificar(score)
     except:
-        return [], 0
+        return [], 0, "Indefinida"
 
 def analisar_oportunidades(df_calc, mapa_nomes):
     resultados = []
@@ -189,49 +154,63 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             preco = last.get('Close')
             preco_ant = anterior.get('Close')
+            preco_open = last.get('Open')
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
+            # Variações
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
+            gap = ((preco_open - preco_ant) / preco_ant) * 100
             
-            # Filtro: Apenas quedas
-            if queda_dia >= 0: continue
+            var_7d = np.nan
+            if len(df_ticker) > 6:
+                # Compara com 5 pregões atrás (aprox 7 dias corridos)
+                preco_7d = df_ticker['Close'].iloc[-6]
+                var_7d = ((preco - preco_7d) / preco_7d) * 100
 
-            sinais, score = gerar_sinal(last, df_ticker)
-            nome = mapa_nomes.get(ticker, ticker)
+            if queda_dia >= 0: continue # Filtra apenas quedas
+
+            sinais, score, classificacao = gerar_sinal(last, df_ticker)
+            
+            # Tratamento do Nome (Pega só a primeira palavra)
+            nome_completo = mapa_nomes.get(ticker, ticker)
+            nome_curto = nome_completo.split()[0] if nome_completo else ticker
+            # Remove vírgulas ou pontos se ficarem no final
+            nome_curto = nome_curto.replace(',', '').replace('.', '')
 
             resultados.append({
                 'Ticker': ticker,
-                'Empresa': nome,
+                'Empresa': nome_curto,
                 'Preco': preco,
                 'Queda_Dia': queda_dia,
+                'Gap': gap,
+                'Var_7D': var_7d,
                 'RSI14': last.get('RSI14', np.nan),
-                'Sinais': ", ".join(sinais),
-                'Score': score
+                'Potencial': classificacao,
+                'Score': score, # Mantemos numérico para ordenar
+                'Sinais': ", ".join(sinais) if sinais else "-"
             })
         except: continue
     return resultados
 
 def plotar_grafico(df_ticker, ticker, empresa, rsi):
-    # Retorna a figura (fig) em vez de mostrar (plt.show)
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
     
     close = df_ticker['Close']
     
-    # Preço
     ax1 = axes[0]
-    ax1.plot(close.index, close.values, label='Close', color='black')
-    ax1.plot(close.index, df_ticker['EMA20'], label='EMA20', alpha=0.7, color='blue')
-    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.2, color='gray')
+    ax1.plot(close.index, close.values, label='Close', color='#333333')
+    ax1.plot(close.index, df_ticker['EMA20'], label='EMA20', alpha=0.7, color='blue', linewidth=1)
+    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.15, color='gray')
     ax1.set_title(f'{ticker} - {empresa}', fontweight='bold')
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
 
-    # RSI
     ax2 = axes[1]
     ax2.plot(close.index, df_ticker['RSI14'], color='orange')
-    ax2.axhline(30, color='red', linestyle='--')
-    ax2.axhline(70, color='green', linestyle='--')
+    ax2.axhline(30, color='red', linestyle='--', linewidth=1)
+    ax2.axhline(70, color='green', linestyle='--', linewidth=1)
+    ax2.fill_between(close.index, 0, 30, alpha=0.2, color='red')
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
     ax2.grid(True, alpha=0.3)
@@ -242,65 +221,73 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi):
 # --- LAYOUT DO APP ---
 
 st.title("📉 Monitor BDR - Swing Trade")
-st.markdown("Rastreamento de BDRs em queda com análise técnica automática.")
+st.markdown("Rastreamento de BDRs em queda com análise de potencial de compra.")
 
-fuso = pytz.timezone('America/Sao_Paulo')
-st.caption(f"Última atualização: {datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')}")
-
-if st.button("🔄 Atualizar Análise"):
-    with st.spinner("Buscando lista de BDRs..."):
+if st.button("🔄 Atualizar Análise", type="primary"):
+    with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
-    
-    if lista_bdrs:
-        st.info(f"Analisando {len(lista_bdrs)} ativos...")
+        df = buscar_dados(lista_bdrs)
         
-        with st.spinner("Baixando cotações do Yahoo Finance..."):
-            df = buscar_dados(lista_bdrs)
+    if not df.empty:
+        df_calc = calcular_indicadores(df)
+        oportunidades = analisar_oportunidades(df_calc, mapa_nomes)
+        
+        if oportunidades:
+            df_res = pd.DataFrame(oportunidades)
+            # Ordenar por Score (maior para menor) e depois por Queda
+            df_res = df_res.sort_values(by=['Score', 'Queda_Dia'], ascending=[False, True])
             
-        if not df.empty:
-            st.write("Calculando indicadores...")
-            df_calc = calcular_indicadores(df)
+            st.success(f"{len(oportunidades)} oportunidades encontradas!")
             
-            oportunidades = analisar_oportunidades(df_calc, mapa_nomes)
+            # --- TABELA INTERATIVA ---
+            st.dataframe(
+                df_res,
+                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "Gap", "Var_7D", "RSI14", "Potencial", "Score", "Sinais"),
+                column_config={
+                    "Preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
+                    "Queda_Dia": st.column_config.NumberColumn("Queda Hoje", format="%.2f%%"),
+                    "Gap": st.column_config.NumberColumn("Gap Abert.", format="%.2f%%"),
+                    "Var_7D": st.column_config.NumberColumn("7 Dias", format="%.2f%%"),
+                    "RSI14": st.column_config.NumberColumn("RSI", format="%.1f"),
+                    "Score": st.column_config.ProgressColumn(
+                        "Força (0-10)", 
+                        help="Pontuação baseada em confluência de indicadores",
+                        format="%d",
+                        min_value=0,
+                        max_value=10,
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
             
-            if oportunidades:
-                df_res = pd.DataFrame(oportunidades)
-                df_res = df_res.sort_values('Queda_Dia')
-                
-                # Exibir tabela interativa
-                st.subheader("📋 Tabela de Oportunidades")
-                st.dataframe(
-                    df_res.style.format({
-                        'Preco': 'R$ {:.2f}',
-                        'Queda_Dia': '{:.2f}%',
-                        'RSI14': '{:.1f}',
-                        'Score': '{:.0f}'
-                    }),
-                    use_container_width=True
-                )
-                
-                # Top 5 Gráficos
-                st.divider()
-                st.subheader("📊 Top 5 Maiores Quedas")
-                
-                top5 = df_res.head(5)
-                cols = st.columns(1) # Uma coluna para gráficos grandes
-                
-                for _, row in top5.iterrows():
-                    ticker = row['Ticker']
-                    try:
-                        df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
+            # --- TOP 5 ---
+            st.divider()
+            st.subheader("🔍 Detalhe Top 5 (Maior Potencial)")
+            
+            top5 = df_res.head(5)
+            
+            for _, row in top5.iterrows():
+                ticker = row['Ticker']
+                try:
+                    df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
+                    
+                    # Cria colunas para layout (Gráfico à esquerda, Detalhes à direita)
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
                         fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'])
                         st.pyplot(fig)
-                        st.markdown(f"**Sinais:** {row['Sinais']} | **Score:** {row['Score']}")
-                        st.divider()
-                    except Exception as e:
-                        st.error(f"Erro ao plotar {ticker}")
-            else:
-                st.warning("Nenhuma BDR em queda encontrada hoje.")
+                        
+                    with col2:
+                        st.metric("Potencial", row['Potencial'])
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%")
+                        st.write(f"**Sinais:**")
+                        st.caption(row['Sinais'])
+                        
+                    st.divider()
+                except Exception: continue
         else:
-            st.error("Falha ao baixar dados do Yahoo Finance.")
+            st.warning("Nenhuma BDR em queda encontrada hoje.")
     else:
-        st.error("Falha ao obter lista da BRAPI.")
-else:
-    st.info("Clique no botão acima para iniciar a varredura.")
+        st.error("Erro ao carregar dados.")
