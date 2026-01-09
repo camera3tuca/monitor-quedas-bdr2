@@ -1,4 +1,22 @@
-import streamlit as st
+@st.cache_data(ttl=3600)
+def obter_dados_brapi():
+    """Busca todas as BDRs via BRAPI - método original"""
+    try:
+        brapi_token = st.secrets.get("BRAPI_API_TOKEN", "iExnKM1xcbQcYL3cNPhPQ3")
+        url = f"https://brapi.dev/api/quote/list?token={brapi_token}"
+        
+        r = requests.get(url, timeout=30)
+        dados = r.json().get('stocks', [])
+        
+        # Filtrar apenas BDRs
+        bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
+        lista_tickers = [d['stock'] for d in bdrs_raw]
+        mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
+        
+        return lista_tickers, mapa_nomes
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar BRAPI: {e}")
+        return [], {}import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
