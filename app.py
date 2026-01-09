@@ -102,7 +102,6 @@ def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
     
-    # Classificação
     def classificar(s):
         if s >= 4: return "Muito Alta"
         if s >= 2: return "Alta"
@@ -115,7 +114,6 @@ def gerar_sinal(row_ticker, df_ticker):
         macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
         
-        # Pontuação
         if pd.notna(rsi) and rsi < 30:
             sinais.append("RSI Oversold")
             score += 3
@@ -155,6 +153,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             preco = last.get('Close')
             preco_ant = anterior.get('Close')
             preco_open = last.get('Open')
+            volume = last.get('Volume')
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
@@ -171,14 +170,22 @@ def analisar_oportunidades(df_calc, mapa_nomes):
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
             
+            # Tratamento de Nome (Melhorado: Pega até 2 palavras e remove sufixos comuns)
             nome_completo = mapa_nomes.get(ticker, ticker)
-            nome_curto = nome_completo.split()[0] if nome_completo else ticker
-            nome_curto = nome_curto.replace(',', '').replace('.', '')
+            palavras = nome_completo.split()
+            # Remove sufixos corporativos comuns se estiverem no início
+            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC']
+            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
+            
+            # Pega as 2 primeiras palavras para dar contexto (ex: "The Trade", "Global Foundries")
+            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
+            nome_curto = nome_curto.replace(',', '').title() # Capitalize bonito
 
             resultados.append({
                 'Ticker': ticker,
                 'Empresa': nome_curto,
                 'Preco': preco,
+                'Volume': volume,
                 'Queda_Dia': queda_dia,
                 'Gap': gap,
                 'Var_7D': var_7d,
@@ -219,13 +226,13 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi):
 def estilizar_potencial(val):
     color = ''
     if val == 'Muito Alta':
-        color = 'background-color: #2e7d32; color: white; font-weight: bold' # Verde escuro
+        color = 'background-color: #2e7d32; color: white; font-weight: bold' 
     elif val == 'Alta':
-        color = 'background-color: #66bb6a; color: black; font-weight: bold' # Verde claro
+        color = 'background-color: #66bb6a; color: black; font-weight: bold'
     elif val == 'Média':
-        color = 'background-color: #ffa726; color: black' # Laranja
+        color = 'background-color: #ffa726; color: black'
     elif val == 'Baixa':
-        color = 'background-color: #e0e0e0; color: black' # Cinza
+        color = 'background-color: #e0e0e0; color: black' 
     return color
 
 # --- LAYOUT DO APP ---
@@ -245,27 +252,29 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
             
-            # ORDENAÇÃO: Queda do Dia (Ascendente = maior queda negativa primeiro)
+            # ORDENAÇÃO: Queda do Dia
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
             
             st.success(f"{len(oportunidades)} oportunidades encontradas! (Ordenado por Maior Queda)")
             
-            # --- TABELA INTERATIVA COLORIDA ---
-            # Aplicamos o estilo (cores) antes de enviar para o Streamlit
+            # --- TABELA INTERATIVA ---
             st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
                 .format({
                     'Preco': 'R$ {:.2f}',
+                    'Volume': '{:,.0f}', # Formato numérico com separador de milhar
                     'Queda_Dia': '{:.2f}%',
                     'Gap': '{:.2f}%',
                     'Var_7D': '{:.2f}%',
                     'RSI14': '{:.1f}'
                 }),
+                column_order=("Ticker", "Empresa", "Preco", "Volume", "Queda_Dia", "Gap", "Var_7D", "RSI14", "Potencial", "Score", "Sinais"),
                 column_config={
-                    "Score": st.column_config.ProgressColumn(
-                        "Força", format="%d", min_value=0, max_value=10
-                    ),
-                    "Potencial": st.column_config.Column("Sinal")
+                    "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
+                    "Volume": st.column_config.NumberColumn("Volume", help="Volume Financeiro"),
+                    "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
+                    "Potencial": st.column_config.Column("Sinal"),
+                    "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large") # Largura aumentada para não truncar
                 },
                 use_container_width=True,
                 hide_index=True
@@ -289,15 +298,14 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         st.pyplot(fig)
                         
                     with col2:
-                        # Exibindo o potencial com cor visualmente
                         potencial = row['Potencial']
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
                         
                         st.markdown(f"### {cor_bola} {potencial}")
                         st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
-                        st.metric("Gap", f"{row['Gap']:.2f}%")
+                        st.metric("Volume", f"{row['Volume']:,.0f}")
                         st.write(f"**Score:** {row['Score']}/10")
-                        st.caption(f"Sinais: {row['Sinais']}")
+                        st.info(f"📋 **Sinais:** {row['Sinais']}") # Caixa de info para garantir leitura completa
                         
                     st.divider()
                 except Exception: continue
