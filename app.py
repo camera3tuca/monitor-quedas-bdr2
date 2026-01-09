@@ -95,19 +95,19 @@ def calcular_fibonacci(df_ticker):
         high = df_ticker['High'].max()
         low = df_ticker['Low'].min()
         diff = high - low
-        return {'61.8%': low + (diff * 0.618)} # Só precisamos desta para o sinal
+        return {'61.8%': low + (diff * 0.618)} 
     except: return None
 
 def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
     
-    # Definição da classificação baseada no score
+    # Classificação
     def classificar(s):
-        if s >= 4: return "🟢 Muito Alta"
-        if s >= 2: return "🟢 Alta"
-        if s >= 1: return "🟡 Média"
-        return "⚪ Baixa"
+        if s >= 4: return "Muito Alta"
+        if s >= 2: return "Alta"
+        if s >= 1: return "Média"
+        return "Baixa"
 
     try:
         close = row_ticker.get('Close')
@@ -164,18 +164,15 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             var_7d = np.nan
             if len(df_ticker) > 6:
-                # Compara com 5 pregões atrás (aprox 7 dias corridos)
                 preco_7d = df_ticker['Close'].iloc[-6]
                 var_7d = ((preco - preco_7d) / preco_7d) * 100
 
-            if queda_dia >= 0: continue # Filtra apenas quedas
+            if queda_dia >= 0: continue 
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
             
-            # Tratamento do Nome (Pega só a primeira palavra)
             nome_completo = mapa_nomes.get(ticker, ticker)
             nome_curto = nome_completo.split()[0] if nome_completo else ticker
-            # Remove vírgulas ou pontos se ficarem no final
             nome_curto = nome_curto.replace(',', '').replace('.', '')
 
             resultados.append({
@@ -187,7 +184,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Var_7D': var_7d,
                 'RSI14': last.get('RSI14', np.nan),
                 'Potencial': classificacao,
-                'Score': score, # Mantemos numérico para ordenar
+                'Score': score,
                 'Sinais': ", ".join(sinais) if sinais else "-"
             })
         except: continue
@@ -218,6 +215,19 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi):
     plt.tight_layout()
     return fig
 
+# Função para colorir a tabela
+def estilizar_potencial(val):
+    color = ''
+    if val == 'Muito Alta':
+        color = 'background-color: #2e7d32; color: white; font-weight: bold' # Verde escuro
+    elif val == 'Alta':
+        color = 'background-color: #66bb6a; color: black; font-weight: bold' # Verde claro
+    elif val == 'Média':
+        color = 'background-color: #ffa726; color: black' # Laranja
+    elif val == 'Baixa':
+        color = 'background-color: #e0e0e0; color: black' # Cinza
+    return color
+
 # --- LAYOUT DO APP ---
 
 st.title("📉 Monitor BDR - Swing Trade")
@@ -234,36 +244,36 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
-            # Ordenar por Score (maior para menor) e depois por Queda
-            df_res = df_res.sort_values(by=['Score', 'Queda_Dia'], ascending=[False, True])
             
-            st.success(f"{len(oportunidades)} oportunidades encontradas!")
+            # ORDENAÇÃO: Queda do Dia (Ascendente = maior queda negativa primeiro)
+            df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
             
-            # --- TABELA INTERATIVA ---
+            st.success(f"{len(oportunidades)} oportunidades encontradas! (Ordenado por Maior Queda)")
+            
+            # --- TABELA INTERATIVA COLORIDA ---
+            # Aplicamos o estilo (cores) antes de enviar para o Streamlit
             st.dataframe(
-                df_res,
-                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "Gap", "Var_7D", "RSI14", "Potencial", "Score", "Sinais"),
+                df_res.style.map(estilizar_potencial, subset=['Potencial'])
+                .format({
+                    'Preco': 'R$ {:.2f}',
+                    'Queda_Dia': '{:.2f}%',
+                    'Gap': '{:.2f}%',
+                    'Var_7D': '{:.2f}%',
+                    'RSI14': '{:.1f}'
+                }),
                 column_config={
-                    "Preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
-                    "Queda_Dia": st.column_config.NumberColumn("Queda Hoje", format="%.2f%%"),
-                    "Gap": st.column_config.NumberColumn("Gap Abert.", format="%.2f%%"),
-                    "Var_7D": st.column_config.NumberColumn("7 Dias", format="%.2f%%"),
-                    "RSI14": st.column_config.NumberColumn("RSI", format="%.1f"),
                     "Score": st.column_config.ProgressColumn(
-                        "Força (0-10)", 
-                        help="Pontuação baseada em confluência de indicadores",
-                        format="%d",
-                        min_value=0,
-                        max_value=10,
+                        "Força", format="%d", min_value=0, max_value=10
                     ),
+                    "Potencial": st.column_config.Column("Sinal")
                 },
                 use_container_width=True,
                 hide_index=True
             )
             
-            # --- TOP 5 ---
+            # --- TOP 5 (MAIORES QUEDAS) ---
             st.divider()
-            st.subheader("🔍 Detalhe Top 5 (Maior Potencial)")
+            st.subheader("🔍 Top 5 Maiores Quedas")
             
             top5 = df_res.head(5)
             
@@ -272,7 +282,6 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 try:
                     df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
                     
-                    # Cria colunas para layout (Gráfico à esquerda, Detalhes à direita)
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
@@ -280,10 +289,15 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         st.pyplot(fig)
                         
                     with col2:
-                        st.metric("Potencial", row['Potencial'])
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%")
-                        st.write(f"**Sinais:**")
-                        st.caption(row['Sinais'])
+                        # Exibindo o potencial com cor visualmente
+                        potencial = row['Potencial']
+                        cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
+                        
+                        st.markdown(f"### {cor_bola} {potencial}")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
+                        st.metric("Gap", f"{row['Gap']:.2f}%")
+                        st.write(f"**Score:** {row['Score']}/10")
+                        st.caption(f"Sinais: {row['Sinais']}")
                         
                     st.divider()
                 except Exception: continue
