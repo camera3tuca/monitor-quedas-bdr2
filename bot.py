@@ -41,12 +41,12 @@ def enviar_whatsapp(mensagem):
         # Envio com timeout de 30 segundos
         r = requests.post(url, data=payload, timeout=30)
         
-        if r.status_code == 200:
+        # 200 = OK, 201 = Created (Mensagem na fila) -> Ambos são sucesso!
+        if r.status_code == 200 or r.status_code == 201:
             print("✅ Mensagem enviada com sucesso!")
             return True
         elif r.status_code == 208:
             print("⚠️ Aviso: CallMeBot bloqueou por ser mensagem duplicada (Spam protection).")
-            print("Tentando adicionar ID único na próxima execução.")
             return False
         else:
             print(f"❌ Erro API CallMeBot: {r.status_code}")
@@ -70,7 +70,7 @@ def buscar_dados(tickers):
     sa_tickers = [f"{t}.SA" for t in tickers]
     
     # Download via Yahoo Finance
-    # Ajuste para evitar erros de threading em ambientes cloud
+    # threads=True acelera o download no GitHub Actions
     df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=120, threads=True)
     
     if df.empty: return pd.DataFrame()
@@ -176,6 +176,7 @@ if __name__ == "__main__":
             msg += "*🏆 TOP 10 MAIORES QUEDAS:*\n"
             
             for _, row in top10.iterrows():
+                # Pega só o primeiro nome
                 nome = mapa_nomes.get(row['Ticker'], row['Ticker']).split()[0]
                 icon = "⭐" if row['Tendencia_Alta'] else "🔻"
                 
@@ -190,7 +191,7 @@ if __name__ == "__main__":
             msg += "\n🔗 _Acesse o App para ver os gráficos_"
             
             # --- ID ÚNICO (Anti-Erro 208) ---
-            # Adiciona timestamp invisível ou no final para tornar a mensagem única
+            # Adiciona timestamp no final para tornar a mensagem única
             timestamp_id = int(time.time())
             msg += f"\n_ID: {timestamp_id}_"
             
