@@ -1,12 +1,8 @@
 name: Bot BDR Diário
 
 on:
-  # Agendamento (Horário UTC)
-  # 10:30 Brasil (Goiânia/Brasília) = 13:30 UTC
   schedule:
-    - cron: '30 13 * * 1-5' # Roda de Segunda a Sexta às 13:30 UTC
-  
-  # Permite rodar manualmente clicando num botão no site do GitHub (aba Actions)
+    - cron: '30 13 * * 1-5' # Roda Seg a Sex às 13:30 UTC (10:30 BRT)
   workflow_dispatch:
 
 jobs:
@@ -14,27 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # 1. Baixa o teu código do repositório para o computador virtual
       - name: Baixar Código (Checkout)
         uses: actions/checkout@v3
 
-      # 2. Instala o Python 3.9
       - name: Configurar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.11' # Atualizado para suportar yfinance novo
 
-      # 3. Instala as bibliotecas necessárias para o bot.py
-      # Nota: Não precisamos instalar o 'streamlit' aqui, pois o bot.py não usa interface visual
       - name: Instalar Dependências
         run: |
           python -m pip install --upgrade pip
           pip install pandas yfinance requests pytz
 
-      # 4. Roda o script do robô passando as senhas (Secrets)
       - name: Rodar Análise e Enviar WhatsApp
         env:
-          # O script bot.py vai ler estas variáveis usando os.environ
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}
           BRAPI_API_TOKEN: ${{ secrets.BRAPI_API_TOKEN }}
