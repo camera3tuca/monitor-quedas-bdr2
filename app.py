@@ -9,10 +9,9 @@ import urllib.parse
 from datetime import datetime
 import pytz
 import warnings
-import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-VERSAO_APP = "v2.7 (Lotes Inteligentes)"
+VERSAO_APP = "v2.2 (Botão Manual + Teste)"
 
 st.set_page_config(
     page_title=f"Monitor BDR {VERSAO_APP}",
@@ -27,16 +26,17 @@ sns.set_palette("husl")
 PERIODO = "1y" 
 TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
-# --- GERENCIAMENTO DE SEGREDOS ---
+# --- GERENCIAMENTO DE SEGREDOS (SECRETS) ---
 try:
     WHATSAPP_PHONE = st.secrets["WHATSAPP_PHONE"]
     WHATSAPP_APIKEY = st.secrets["WHATSAPP_APIKEY"]
     BRAPI_API_TOKEN = st.secrets["BRAPI_API_TOKEN"]
 except Exception:
     st.error("❌ ERRO CRÍTICO: Chaves de API não encontradas!")
+    st.info("Configure os 'Secrets' no painel do Streamlit.")
     st.stop()
 
-# --- SESSÃO ---
+# --- INICIALIZAÇÃO DA SESSÃO (MEMÓRIA) ---
 if 'dados_carregados' not in st.session_state:
     st.session_state.dados_carregados = False
 if 'df_resultado' not in st.session_state:
@@ -45,22 +45,24 @@ if 'df_calculado' not in st.session_state:
     st.session_state.df_calculado = pd.DataFrame()
 
 # --- FUNÇÕES AUXILIARES ---
+
 def obter_hora_brasil():
     fuso = pytz.timezone('America/Sao_Paulo')
     return datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')
 
-def enviar_whatsapp_textmebot(mensagem):
+def enviar_whatsapp(mensagem):
     try:
-        texto_codificado = urllib.parse.quote(mensagem)
-        phone = WHATSAPP_PHONE.strip()
-        if not phone.startswith("+"): phone = "+" + phone
-        url = f"https://api.textmebot.com/send.php?recipient={phone}&apikey={WHATSAPP_APIKEY}&text={texto_codificado}"
-        r = requests.get(url, timeout=30)
-        if r.status_code == 200: return True, "Enviado!"
-        else: return False, f"Erro {r.status_code}"
-    except Exception as e: return False, str(e)
+        texto_encoded = urllib.parse.quote(mensagem)
+        url = f"https://api.callmebot.com/whatsapp.php?phone={WHATSAPP_PHONE}&text={texto_encoded}&apikey={WHATSAPP_APIKEY}"
+        r = requests.get(url, timeout=20)
+        if r.status_code == 200:
+            return True, "Enviado com sucesso!"
+        else:
+            return False, f"Erro API: {r.status_code}"
+    except Exception as e:
+        return False, str(e)
 
-# --- COLETA DE DADOS (ESTRATÉGIA DE LOTES) ---
+# --- FUNÇÕES DE DADOS ---
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
@@ -72,95 +74,61 @@ def obter_dados_brapi():
         lista_tickers = [d['stock'] for d in bdrs_raw]
         mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
         return lista_tickers, mapa_nomes
-    except Exception: return [], {}
+    except Exception as e:
+        st.error(f"Erro Brapi: {e}")
+        return [], {}
 
-def buscar_dados_em_lotes(tickers):
+@st.cache_data(ttl=1800)
+def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
-    
     sa_tickers = [f"{t}.SA" for t in tickers]
-    
-    # Configuração dos Lotes
-    TAMANHO_LOTE = 50 
-    total_lotes = len(sa_tickers) // TAMANHO_LOTE + 1
-    lista_dfs = []
-    
-    barra_progresso = st.progress(0)
-    status = st.empty()
-    
-    for i in range(0, len(sa_tickers), TAMANHO_LOTE):
-        lote = sa_tickers[i : i + TAMANHO_LOTE]
-        if not lote: continue
-        
-        perc = (i / len(sa_tickers))
-        barra_progresso.progress(perc)
-        status.text(f"Baixando lote {i//TAMANHO_LOTE + 1}/{total_lotes}...")
-        
-        try:
-            # Baixa o lote pequeno (Rápido e Seguro)
-            df_lote = yf.download(lote, period=PERIODO, auto_adjust=True, progress=False, threads=True)
-            
-            if not df_lote.empty:
-                # Tratamento MultiIndex imediato
-                if isinstance(df_lote.columns, pd.MultiIndex):
-                    df_lote.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df_lote.columns])
-                lista_dfs.append(df_lote)
-                
-        except Exception as e:
-            print(f"Erro no lote {i}: {e}")
-            continue
-            
-    barra_progresso.empty()
-    status.empty()
-    
-    if not lista_dfs:
-        return pd.DataFrame()
-        
-    # Junta todos os pedaços num DataFrame gigante
     try:
-        df_final = pd.concat(lista_dfs, axis=1)
-        # Remove colunas duplicadas se houver
-        df_final = df_final.loc[:, ~df_final.columns.duplicated()]
-        return df_final.dropna(axis=1, how='all')
-    except:
-        return pd.DataFrame()
-
-# --- CÁLCULOS (MANTIDOS IGUAIS) ---
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
+        if df.empty: return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
+        return df.dropna(axis=1, how='all')
+    except Exception: return pd.DataFrame()
 
 def calcular_indicadores(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
     
-    status_text = st.empty()
+    progresso = st.progress(0)
+    total = len(tickers)
     
-    # Cálculo vetorizado onde possível para acelerar
-    # (Mantemos o loop para segurança dos indicadores complexos)
     for i, ticker in enumerate(tickers):
-        if i % 50 == 0: status_text.text(f"Processando indicadores: {i}/{len(tickers)}")
+        progresso.progress((i + 1) / total)
         try:
             close = df_calc[('Close', ticker)]
             high = df_calc[('High', ticker)]
             low = df_calc[('Low', ticker)]
             
+            # RSI 14
             delta = close.diff()
             ganho = delta.clip(lower=0).rolling(14).mean()
             perda = -delta.clip(upper=0).rolling(14).mean()
             rs = ganho / perda
             df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
 
-            lowest_low = low.rolling(14).min()
-            highest_high = high.rolling(14).max()
-            df_calc[('Stoch_K', ticker)] = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+            # ESTOCÁSTICO 14 (%K)
+            lowest_low = low.rolling(window=14).min()
+            highest_high = high.rolling(window=14).max()
+            stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+            df_calc[('Stoch_K', ticker)] = stoch_k
 
+            # MÉDIAS
+            df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
             df_calc[('SMA200', ticker)] = close.rolling(window=200).mean()
-            
+
+            # Bollinger
             sma20 = close.rolling(20).mean()
             std = close.rolling(20).std()
             df_calc[('BB_Lower', ticker)] = sma20 - (std * 2)
             df_calc[('BB_Upper', ticker)] = sma20 + (std * 2)
-            df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
         except: continue
-        
-    status_text.empty()
+            
+    progresso.empty()
     return df_calc
 
 def calcular_fibonacci(df_ticker):
@@ -237,27 +205,28 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             preco = last.get('Close')
             preco_ant = anterior.get('Close')
-            preco_open = last.get('Open')
             volume = last.get('Volume')
             sma200 = last.get('SMA200')
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
-            # Filtro de Queda
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             if queda_dia >= 0: continue 
-            
-            gap = ((preco_open - preco_ant) / preco_ant) * 100
 
             sinais, score, classificacao, tendencia_alta = gerar_sinal(last, df_ticker)
 
             rsi = last.get('RSI14', 50)
             stoch = last.get('Stoch_K', 50)
             is_index = ((100 - rsi) + (100 - stoch)) / 2
+            
             dist_sma200 = ((preco - sma200) / sma200) * 100 if pd.notna(sma200) else 0
 
             nome_completo = mapa_nomes.get(ticker, ticker)
-            nome_curto = nome_completo.split()[0].replace(',', '').title()
+            palavras = nome_completo.split()
+            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS']
+            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
+            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
+            nome_curto = nome_curto.replace(',', '').title()
 
             status_visual = "⭐ STRATEGY" if tendencia_alta else "⚠️ Contra-Tend."
 
@@ -267,7 +236,6 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Preco': preco,
                 'Volume': volume,
                 'Queda_Dia': queda_dia,
-                'Gap': gap,
                 'IS': is_index,
                 'Dist_SMA200': dist_sma200,
                 'RSI14': rsi,
@@ -292,7 +260,10 @@ def plotar_grafico(df_ticker, ticker, empresa, is_val, tendencia_alta):
     ax1.plot(close.index, sma200, label='SMA 200', color=cor_sma, linewidth=2.5)
     ax1.plot(close.index, df_ticker['EMA20'], label='EMA 20', color='blue', alpha=0.5)
     ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.1, color='gray')
-    ax1.set_title(f'{ticker} - {empresa}', fontweight='bold')
+    
+    titulo_status = "✅ TENDÊNCIA ALTA" if tendencia_alta else "❌ TENDÊNCIA BAIXA"
+    cor_titulo = "green" if tendencia_alta else "red"
+    ax1.set_title(f'{ticker} - {empresa} | {titulo_status} | I.S.: {is_val:.0f}', fontweight='bold', color=cor_titulo)
     ax1.legend(loc='best')
     ax1.grid(True, alpha=0.3)
 
@@ -302,6 +273,7 @@ def plotar_grafico(df_ticker, ticker, empresa, is_val, tendencia_alta):
     ax2.axhline(70, color='green', linestyle='--')
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
+    ax2.grid(True, alpha=0.3)
     
     ax3 = axes[2]
     if 'Stoch_K' in df_ticker.columns:
@@ -310,10 +282,12 @@ def plotar_grafico(df_ticker, ticker, empresa, is_val, tendencia_alta):
         ax3.axhline(80, color='green', linestyle='--')
     ax3.set_ylabel('Stoch')
     ax3.set_ylim(0, 100)
+    ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
     return fig
 
+# Funções de Estilo
 def estilizar_is(val):
     if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold'
     elif val >= 60: return 'background-color: #ffa726; color: black'
@@ -326,55 +300,56 @@ def estilizar_setup(val):
 
 def formatar_msg_whatsapp(df_res, hora):
     top = df_res.head(10)
-    msg = f"🦅 *RELATÓRIO DE QUEDAS*\n"
+    msg = f"🦅 *BDR ALERT {VERSAO_APP}*\n"
     msg += f"🗓️ {hora}\n"
+    
     qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
-    msg += f"🚨 *{len(df_res)}* Total | ⭐ *{qtd_strategy}* Estratégia\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
+    msg += f"🚨 *{len(df_res)}* Quedas | ⭐ *{qtd_strategy}* Estratégia\n\n"
+    msg += "*🏆 TOP 10 MAIORES QUEDAS:*\n"
+    
     for _, row in top.iterrows():
         icon = "⭐" if row['Tendencia_Alta'] else "🔻"
         msg += f"{icon} *{row['Ticker']}* ({row['Queda_Dia']:.1f}%)\n"
-        msg += f"   💰 R${row['Preco']:.2f} | 📊 I.S.: {row['IS']:.0f}\n"
-        sinais = row['Sinais'] if row['Sinais'] else "Queda"
-        msg += f"   🛠 {sinais}\n" 
-        msg += "   ────────────────\n"
-    msg += "\n🔗 _Acesse o App para gráficos_"
+        msg += f"   💵 R$ {row['Preco']:.2f} | 📊 I.S. {row['IS']:.0f}\n"
+        msg += f"   📋 {row['Sinais']}\n" 
+        msg += "   - - - - - - - -\n"
+        
+    msg += "\n🔗 _Ver detalhes no App_"
     return msg
 
-def exibir_legendas():
-    with st.expander("ℹ️ ENTENDA OS SINAIS E INDICADORES (CLIQUE AQUI)"):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("""
-            **📊 Indicadores:**
-            * **I.S. (Índice de Sobrevenda):** Varia de 0 a 100. Vermelho (>80) = Muito barato.
-            * **RSI (IFR):** Abaixo de 30 = Sobrevendido.
-            * **Stoch (Estocástico):** Abaixo de 20 = Fundo.
-            """)
-        with c2:
-            st.markdown("""
-            **🛠 Sinais Técnicos:**
-            * **Trend Alta:** Preço acima da Média de 200.
-            * **BB Suporte:** Preço tocou na banda inferior.
-            * **Fibo 61.8:** Retração de ouro.
-            """)
-            st.info("⭐ **Estratégia Ouro:** Trend Alta + Queda forte.")
+# --- LAYOUT BARRA LATERAL (Teste) ---
+
+with st.sidebar:
+    st.title("Configurações")
+    st.info(f"App Versão: {VERSAO_APP}")
+    st.write(f"⏰ Hora Brasil:\n**{obter_hora_brasil()}**")
+    st.divider()
+    st.write("🔧 **Teste de Notificação**")
+    
+    # BOTÃO 1: Teste Rápido (Sidebar)
+    if st.button("🔔 Testar Conexão WhatsApp"):
+        with st.spinner("Enviando teste..."):
+            sucesso, msg = enviar_whatsapp(f"🤖 *Teste do Bot BDR*\nOlá! A conexão está funcionando perfeitamente.\nHora: {obter_hora_brasil()}")
+            if sucesso:
+                st.success("Teste enviado!")
+            else:
+                st.error(f"Falha: {msg}")
 
 # --- LAYOUT PRINCIPAL ---
 
 st.title(f"🦅 Monitor BDR - Swing Trade")
-exibir_legendas()
+st.caption(f"Versão: {VERSAO_APP} | Hora Execução: {obter_hora_brasil()}")
 
+# BOTÃO 2: Rastrear Mercado
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     btn_analisar = st.button("🔄 Rastrear Mercado", type="primary")
 
+# Lógica de Análise (Popula a Sessão)
 if btn_analisar:
-    # --- PROCESSO DE BUSCA OTIMIZADO ---
-    lista_bdrs, mapa_nomes = obter_dados_brapi()
-    
-    # Chama a nova função em lotes
-    df = buscar_dados_em_lotes(lista_bdrs)
+    with st.spinner("Analisando mercado..."):
+        lista_bdrs, mapa_nomes = obter_dados_brapi()
+        df = buscar_dados(lista_bdrs)
         
     if not df.empty:
         df_calc = calcular_indicadores(df)
@@ -382,8 +357,10 @@ if btn_analisar:
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
+            # Ordenação
             df_res = df_res.sort_values(by=['Tendencia_Alta', 'Queda_Dia'], ascending=[False, True])
             
+            # SALVA NA MEMÓRIA (SESSION STATE)
             st.session_state.dados_carregados = True
             st.session_state.df_resultado = df_res
             st.session_state.df_calculado = df_calc
@@ -391,44 +368,48 @@ if btn_analisar:
         else:
             st.warning("Nenhuma oportunidade encontrada.")
             st.session_state.dados_carregados = False
-    else:
-        st.error("Não foi possível baixar dados (Yahoo instável). Tente novamente em 1 min.")
 
-# 3. EXIBIÇÃO DOS DADOS
+# SE TIVER DADOS NA MEMÓRIA, MOSTRA O CONTEÚDO
 if st.session_state.dados_carregados:
     df_res = st.session_state.df_resultado
     df_calc = st.session_state.df_calculado
     
+    # --- ÁREA DE ENVIO DE RELATÓRIO ---
+    st.markdown("### 🚀 Ações")
+    col_envio, col_vazia = st.columns([2, 5])
+    
+    # BOTÃO 3: Enviar Relatório Real (Só aparece se tiver dados)
+    with col_envio:
+        if st.button("📱 Enviar Relatório para WhatsApp"):
+            hora_atual = obter_hora_brasil()
+            msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
+            with st.spinner("Enviando relatório..."):
+                sucesso, retorno = enviar_whatsapp(msg_zap)
+                if sucesso:
+                    st.success("Relatório enviado com sucesso!")
+                else:
+                    st.error(f"Erro no envio: {retorno}")
+    
+    # --- TABELA E DADOS ---
     qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Oportunidades", len(df_res))
-    m2.metric("Estratégia Ouro", qtd_strategy)
-    
-    if m3.button("📱 Enviar Relatório WhatsApp"):
-        hora_atual = obter_hora_brasil()
-        msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
-        with st.spinner("Enviando..."):
-            sucesso, retorno = enviar_whatsapp_textmebot(msg_zap)
-            if sucesso: st.success("Enviado!")
-            else: st.error(f"Erro: {retorno}")
-    
     st.divider()
+    st.success(f"{len(df_res)} quedas encontradas. {qtd_strategy} na Estratégia Principal!")
     
     st.dataframe(
         df_res.style.map(estilizar_setup, subset=['Setup'])
                     .map(estilizar_is, subset=['IS'])
         .format({
             'Preco': 'R$ {:.2f}',
+            'Volume': '{:,.0f}',
             'Queda_Dia': '{:.2f}%',
-            'Gap': '{:.2f}%',
             'Dist_SMA200': '{:.2f}%',
             'IS': '{:.0f}'
         }),
-        column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "Gap", "IS", "Volume", "Sinais"),
+        column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "IS", "Dist_SMA200", "Volume", "Sinais"),
         column_config={
             "Setup": st.column_config.Column("Estratégia", width="medium"),
-            "Volume": st.column_config.NumberColumn("Volume", format="%d"),
-            "IS": st.column_config.NumberColumn("I.S.", help="0-100"),
+            "Dist_SMA200": st.column_config.NumberColumn("Dist. SMA200"),
+            "IS": st.column_config.NumberColumn("I.S."),
             "Sinais": st.column_config.TextColumn("Motivos", width="large")
         },
         use_container_width=True,
@@ -436,9 +417,9 @@ if st.session_state.dados_carregados:
     )
     
     st.divider()
-    st.subheader("🎯 Gráficos (Top 5 Estratégia)")
-    
+    st.subheader("🎯 Destaques da Estratégia (Top 5)")
     top_graficos = df_res.head(5)
+    
     for _, row in top_graficos.iterrows():
         try:
             df_ticker = df_calc.xs(row['Ticker'], axis=1, level=1).dropna()
@@ -446,5 +427,9 @@ if st.session_state.dados_carregados:
             st.markdown(f"### {icon} {row['Ticker']} - {row['Empresa']}")
             fig = plotar_grafico(df_ticker, row['Ticker'], row['Empresa'], row['IS'], row['Tendencia_Alta'])
             st.pyplot(fig)
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Queda", f"{row['Queda_Dia']:.2f}%")
+            col2.metric("Distância SMA200", f"{row['Dist_SMA200']:.2f}%")
+            col3.metric("Sobrevenda (I.S.)", f"{row['IS']:.0f}/100")
             st.divider()
         except: continue
