@@ -11,7 +11,7 @@ import pytz
 import warnings
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-VERSAO_APP = "v2.2 (Botão Manual + Teste)"
+VERSAO_APP = "v2.1 (Secrets + Top10)"
 
 st.set_page_config(
     page_title=f"Monitor BDR {VERSAO_APP}",
@@ -27,22 +27,15 @@ PERIODO = "1y"
 TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
 # --- GERENCIAMENTO DE SEGREDOS (SECRETS) ---
+# Tenta pegar dos Secrets do Streamlit, se não, avisa o usuário
 try:
     WHATSAPP_PHONE = st.secrets["WHATSAPP_PHONE"]
     WHATSAPP_APIKEY = st.secrets["WHATSAPP_APIKEY"]
     BRAPI_API_TOKEN = st.secrets["BRAPI_API_TOKEN"]
 except Exception:
     st.error("❌ ERRO CRÍTICO: Chaves de API não encontradas!")
-    st.info("Configure os 'Secrets' no painel do Streamlit.")
-    st.stop()
-
-# --- INICIALIZAÇÃO DA SESSÃO (MEMÓRIA) ---
-if 'dados_carregados' not in st.session_state:
-    st.session_state.dados_carregados = False
-if 'df_resultado' not in st.session_state:
-    st.session_state.df_resultado = pd.DataFrame()
-if 'df_calculado' not in st.session_state:
-    st.session_state.df_calculado = pd.DataFrame()
+    st.info("Configure os 'Secrets' no painel do Streamlit ou crie o arquivo .streamlit/secrets.toml localmente.")
+    st.stop() # Para a execução se não tiver chaves
 
 # --- FUNÇÕES AUXILIARES ---
 
@@ -56,9 +49,9 @@ def enviar_whatsapp(mensagem):
         url = f"https://api.callmebot.com/whatsapp.php?phone={WHATSAPP_PHONE}&text={texto_encoded}&apikey={WHATSAPP_APIKEY}"
         r = requests.get(url, timeout=20)
         if r.status_code == 200:
-            return True, "Enviado com sucesso!"
+            return True, "Enviado!"
         else:
-            return False, f"Erro API: {r.status_code}"
+            return False, f"Erro {r.status_code}"
     except Exception as e:
         return False, str(e)
 
@@ -144,6 +137,7 @@ def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
     
+    # Classificação Simples
     def classificar(s):
         if s >= 4: return "💎 Ouro"
         if s >= 2: return "🥈 Prata"
@@ -157,34 +151,36 @@ def gerar_sinal(row_ticker, df_ticker):
         stoch = row_ticker.get('Stoch_K')
         bb_lower = row_ticker.get('BB_Lower')
         
+        # TENDÊNCIA DE ALTA
         tendencia_alta = False
         if pd.notna(sma200) and pd.notna(close):
             if close > sma200:
                 tendencia_alta = True
-                sinais.append("Trend Alta")
+                sinais.append("Trend Alta") # Resumido
                 score += 3
             else:
-                sinais.append("Trend Baixa")
+                sinais.append("Trend Baixa") # Resumido
 
+        # Sinais de Pullback
         if pd.notna(rsi):
             if rsi < 30:
-                sinais.append("RSI Baixo")
+                sinais.append("RSI Baixo") # Resumido
                 score += 3
             elif rsi < 40:
                 score += 1
         
         if pd.notna(stoch) and stoch < 20:
-            sinais.append("Stoch Fundo")
+            sinais.append("Stoch Fundo") # Resumido
             score += 2
             
         if pd.notna(close) and pd.notna(bb_lower):
             if close < bb_lower * 1.02:
-                sinais.append("BB Suporte")
+                sinais.append("BB Suporte") # Resumido
                 score += 1
 
         fibo = calcular_fibonacci(df_ticker)
         if fibo and (fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01):
-            sinais.append("Fibo 61.8")
+            sinais.append("Fibo 61.8") # Resumido
             score += 2
 
         return sinais, score, classificar(score), tendencia_alta
@@ -210,6 +206,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
+            # Apenas quedas
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             if queda_dia >= 0: continue 
 
@@ -298,8 +295,11 @@ def estilizar_setup(val):
         return 'background-color: #1b5e20; color: white; font-weight: bold; border-radius: 5px'
     return 'color: #757575'
 
+# --- WHATSAPP TOP 10 ---
 def formatar_msg_whatsapp(df_res, hora):
+    # Pega top 10 maiores quedas
     top = df_res.head(10)
+    
     msg = f"🦅 *BDR ALERT {VERSAO_APP}*\n"
     msg += f"🗓️ {hora}\n"
     
@@ -311,43 +311,32 @@ def formatar_msg_whatsapp(df_res, hora):
         icon = "⭐" if row['Tendencia_Alta'] else "🔻"
         msg += f"{icon} *{row['Ticker']}* ({row['Queda_Dia']:.1f}%)\n"
         msg += f"   💵 R$ {row['Preco']:.2f} | 📊 I.S. {row['IS']:.0f}\n"
+        # Sinais resumidos na mesma linha para economizar espaço
         msg += f"   📋 {row['Sinais']}\n" 
         msg += "   - - - - - - - -\n"
         
     msg += "\n🔗 _Ver detalhes no App_"
     return msg
 
-# --- LAYOUT BARRA LATERAL (Teste) ---
+# --- APP LAYOUT ---
 
 with st.sidebar:
     st.title("Configurações")
     st.info(f"App Versão: {VERSAO_APP}")
     st.write(f"⏰ Hora Brasil:\n**{obter_hora_brasil()}**")
     st.divider()
-    st.write("🔧 **Teste de Notificação**")
-    
-    # BOTÃO 1: Teste Rápido (Sidebar)
-    if st.button("🔔 Testar Conexão WhatsApp"):
-        with st.spinner("Enviando teste..."):
-            sucesso, msg = enviar_whatsapp(f"🤖 *Teste do Bot BDR*\nOlá! A conexão está funcionando perfeitamente.\nHora: {obter_hora_brasil()}")
-            if sucesso:
-                st.success("Teste enviado!")
-            else:
-                st.error(f"Falha: {msg}")
-
-# --- LAYOUT PRINCIPAL ---
+    st.success("🔒 Chaves Seguras (Secrets) Ativas")
 
 st.title(f"🦅 Monitor BDR - Swing Trade")
 st.caption(f"Versão: {VERSAO_APP} | Hora Execução: {obter_hora_brasil()}")
 
-# BOTÃO 2: Rastrear Mercado
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     btn_analisar = st.button("🔄 Rastrear Mercado", type="primary")
 
-# Lógica de Análise (Popula a Sessão)
 if btn_analisar:
-    with st.spinner("Analisando mercado..."):
+    hora_atual = obter_hora_brasil()
+    with st.spinner("Analisando mercado e gerando relatório..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
         
@@ -357,79 +346,61 @@ if btn_analisar:
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
-            # Ordenação
+            # Ordenação por Queda (do jeito que tu gostas)
             df_res = df_res.sort_values(by=['Tendencia_Alta', 'Queda_Dia'], ascending=[False, True])
             
-            # SALVA NA MEMÓRIA (SESSION STATE)
-            st.session_state.dados_carregados = True
-            st.session_state.df_resultado = df_res
-            st.session_state.df_calculado = df_calc
-            st.toast("Análise concluída!", icon="✅")
+            # --- ENVIO WHATSAPP ---
+            msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
+            sucesso, retorno = enviar_whatsapp(msg_zap)
+            
+            if sucesso:
+                st.toast("✅ Top 10 enviado para WhatsApp!", icon="📱")
+            else:
+                st.error(f"Falha no envio WhatsApp: {retorno}")
+            
+            # --- EXIBIÇÃO ---
+            qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
+            st.success(f"{len(oportunidades)} quedas encontradas. {qtd_strategy} na Estratégia Principal!")
+            
+            st.dataframe(
+                df_res.style.map(estilizar_setup, subset=['Setup'])
+                            .map(estilizar_is, subset=['IS'])
+                .format({
+                    'Preco': 'R$ {:.2f}',
+                    'Volume': '{:,.0f}',
+                    'Queda_Dia': '{:.2f}%',
+                    'Dist_SMA200': '{:.2f}%',
+                    'IS': '{:.0f}'
+                }),
+                column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "IS", "Dist_SMA200", "Volume", "Sinais"),
+                column_config={
+                    "Setup": st.column_config.Column("Estratégia", width="medium"),
+                    "Dist_SMA200": st.column_config.NumberColumn("Dist. SMA200"),
+                    "IS": st.column_config.NumberColumn("I.S."),
+                    "Sinais": st.column_config.TextColumn("Motivos", width="large")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.divider()
+            st.subheader("🎯 Destaques da Estratégia (Top 5)")
+            top_graficos = df_res.head(5)
+            
+            for _, row in top_graficos.iterrows():
+                try:
+                    df_ticker = df_calc.xs(row['Ticker'], axis=1, level=1).dropna()
+                    icon = "⭐" if row['Tendencia_Alta'] else "⚠️"
+                    st.markdown(f"### {icon} {row['Ticker']} - {row['Empresa']}")
+                    fig = plotar_grafico(df_ticker, row['Ticker'], row['Empresa'], row['IS'], row['Tendencia_Alta'])
+                    st.pyplot(fig)
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Queda", f"{row['Queda_Dia']:.2f}%")
+                    col2.metric("Distância SMA200", f"{row['Dist_SMA200']:.2f}%")
+                    col3.metric("Sobrevenda (I.S.)", f"{row['IS']:.0f}/100")
+                    st.divider()
+                except: continue
         else:
             st.warning("Nenhuma oportunidade encontrada.")
-            st.session_state.dados_carregados = False
-
-# SE TIVER DADOS NA MEMÓRIA, MOSTRA O CONTEÚDO
-if st.session_state.dados_carregados:
-    df_res = st.session_state.df_resultado
-    df_calc = st.session_state.df_calculado
-    
-    # --- ÁREA DE ENVIO DE RELATÓRIO ---
-    st.markdown("### 🚀 Ações")
-    col_envio, col_vazia = st.columns([2, 5])
-    
-    # BOTÃO 3: Enviar Relatório Real (Só aparece se tiver dados)
-    with col_envio:
-        if st.button("📱 Enviar Relatório para WhatsApp"):
-            hora_atual = obter_hora_brasil()
-            msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
-            with st.spinner("Enviando relatório..."):
-                sucesso, retorno = enviar_whatsapp(msg_zap)
-                if sucesso:
-                    st.success("Relatório enviado com sucesso!")
-                else:
-                    st.error(f"Erro no envio: {retorno}")
-    
-    # --- TABELA E DADOS ---
-    qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
-    st.divider()
-    st.success(f"{len(df_res)} quedas encontradas. {qtd_strategy} na Estratégia Principal!")
-    
-    st.dataframe(
-        df_res.style.map(estilizar_setup, subset=['Setup'])
-                    .map(estilizar_is, subset=['IS'])
-        .format({
-            'Preco': 'R$ {:.2f}',
-            'Volume': '{:,.0f}',
-            'Queda_Dia': '{:.2f}%',
-            'Dist_SMA200': '{:.2f}%',
-            'IS': '{:.0f}'
-        }),
-        column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "IS", "Dist_SMA200", "Volume", "Sinais"),
-        column_config={
-            "Setup": st.column_config.Column("Estratégia", width="medium"),
-            "Dist_SMA200": st.column_config.NumberColumn("Dist. SMA200"),
-            "IS": st.column_config.NumberColumn("I.S."),
-            "Sinais": st.column_config.TextColumn("Motivos", width="large")
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    st.divider()
-    st.subheader("🎯 Destaques da Estratégia (Top 5)")
-    top_graficos = df_res.head(5)
-    
-    for _, row in top_graficos.iterrows():
-        try:
-            df_ticker = df_calc.xs(row['Ticker'], axis=1, level=1).dropna()
-            icon = "⭐" if row['Tendencia_Alta'] else "⚠️"
-            st.markdown(f"### {icon} {row['Ticker']} - {row['Empresa']}")
-            fig = plotar_grafico(df_ticker, row['Ticker'], row['Empresa'], row['IS'], row['Tendencia_Alta'])
-            st.pyplot(fig)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Queda", f"{row['Queda_Dia']:.2f}%")
-            col2.metric("Distância SMA200", f"{row['Dist_SMA200']:.2f}%")
-            col3.metric("Sobrevenda (I.S.)", f"{row['IS']:.0f}/100")
-            st.divider()
-        except: continue
+    else:
+        st.error("Erro ao carregar dados.")
