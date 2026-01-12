@@ -11,7 +11,7 @@ import pytz
 import warnings
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-VERSAO_APP = "v2.5 (Legendado + Formatado)"
+VERSAO_APP = "v2.6 (Coleta Rápida)"
 
 st.set_page_config(
     page_title=f"Monitor BDR {VERSAO_APP}",
@@ -62,8 +62,7 @@ def enviar_whatsapp_textmebot(mensagem):
         else: return False, f"Erro {r.status_code}"
     except Exception as e: return False, str(e)
 
-# --- FUNÇÕES DE DADOS E INDICADORES ---
-# (Mantive as funções de cálculo iguais para não quebrar a lógica que já funciona)
+# --- FUNÇÕES DE DADOS (VERSÃO RÁPIDA RESTAURADA) ---
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
@@ -77,25 +76,41 @@ def obter_dados_brapi():
         return lista_tickers, mapa_nomes
     except Exception: return [], {}
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=900) # Cache de 15 min
 def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
     try:
-        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
+        # --- VOLTANDO AO MÉTODO ORIGINAL ---
+        # threads=True: Baixa vários ao mesmo tempo (muito mais rápido)
+        # timeout=120: Dá mais tempo para não falhar se a internet oscilar
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=120, threads=True)
+        
         if df.empty: return pd.DataFrame()
+        
+        # Correção para o formato novo do yfinance (MultiIndex)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
+            
         return df.dropna(axis=1, how='all')
-    except Exception: return pd.DataFrame()
+    except Exception as e:
+        print(f"Erro no download: {e}")
+        return pd.DataFrame()
 
 def calcular_indicadores(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
+    
+    # Barra de progresso visual
     progresso = st.progress(0)
+    status_text = st.empty()
     total = len(tickers)
+    
     for i, ticker in enumerate(tickers):
-        progresso.progress((i + 1) / total)
+        if i % 10 == 0: # Atualiza a barra a cada 10 ativos para não travar
+            progresso.progress((i + 1) / total)
+            status_text.text(f"Calculando indicadores: {ticker} ({i}/{total})")
+            
         try:
             close = df_calc[('Close', ticker)]
             high = df_calc[('High', ticker)]
@@ -119,7 +134,9 @@ def calcular_indicadores(df):
             df_calc[('BB_Lower', ticker)] = sma20 - (std * 2)
             df_calc[('BB_Upper', ticker)] = sma20 + (std * 2)
         except: continue
+        
     progresso.empty()
+    status_text.empty()
     return df_calc
 
 def calcular_fibonacci(df_ticker):
@@ -202,6 +219,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
+            # Filtro de Queda (Negativo)
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             if queda_dia >= 0: continue 
             
@@ -296,7 +314,9 @@ def formatar_msg_whatsapp(df_res, hora):
         icon = "⭐" if row['Tendencia_Alta'] else "🔻"
         msg += f"{icon} *{row['Ticker']}* ({row['Queda_Dia']:.1f}%)\n"
         msg += f"   💰 R${row['Preco']:.2f} | 📊 I.S.: {row['IS']:.0f}\n"
-        msg += f"   🛠 {row['Sinais']}\n" 
+        # Tratamento seguro para sinais vazios
+        sinais = row['Sinais'] if row['Sinais'] else "Queda"
+        msg += f"   🛠 {sinais}\n" 
         msg += "   ────────────────\n"
         
     msg += "\n🔗 _Acesse o App para gráficos_"
@@ -337,8 +357,9 @@ with col_btn1:
     btn_analisar = st.button("🔄 Rastrear Mercado", type="primary")
 
 if btn_analisar:
-    with st.spinner("Analisando mercado..."):
+    with st.spinner("Analisando mercado (Baixando dados em paralelo)..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
+        # Chama a função restaurada com threads=True
         df = buscar_dados(lista_bdrs)
         
     if not df.empty:
@@ -353,10 +374,12 @@ if btn_analisar:
             st.session_state.dados_carregados = True
             st.session_state.df_resultado = df_res
             st.session_state.df_calculado = df_calc
-            st.toast("Análise concluída!", icon="✅")
+            st.toast("Análise concluída com sucesso!", icon="✅")
         else:
-            st.warning("Nenhuma oportunidade encontrada.")
+            st.warning("Nenhuma oportunidade encontrada. (Tente novamente em instantes)")
             st.session_state.dados_carregados = False
+    else:
+        st.error("Falha ao baixar dados. O Yahoo Finance pode estar instável. Tente novamente.")
 
 # 3. EXIBIÇÃO DOS DADOS
 if st.session_state.dados_carregados:
@@ -373,7 +396,7 @@ if st.session_state.dados_carregados:
     if m3.button("📱 Enviar Relatório (Print) WhatsApp"):
         hora_atual = obter_hora_brasil()
         msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
-        with st.spinner("Enviando relatório..."):
+        with st.spinner("Enviando relatório via TextMeBot..."):
             sucesso, retorno = enviar_whatsapp_textmebot(msg_zap)
             if sucesso: st.success("Relatório enviado!")
             else: st.error(f"Erro: {retorno}")
@@ -394,7 +417,7 @@ if st.session_state.dados_carregados:
         column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "Gap", "IS", "Volume", "Sinais"),
         column_config={
             "Setup": st.column_config.Column("Estratégia", width="medium"),
-            "Volume": st.column_config.NumberColumn("Volume", format="%d"), # AQUI ESTÁ A MUDANÇA (INTEIRO)
+            "Volume": st.column_config.NumberColumn("Volume", format="%d"),
             "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda (0-100)"),
             "Sinais": st.column_config.TextColumn("Motivos", width="large")
         },
