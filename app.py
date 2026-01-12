@@ -62,22 +62,14 @@ def calcular_indicadores(df):
         progresso.progress((i + 1) / total)
         try:
             close = df_calc[('Close', ticker)]
-            high = df_calc[('High', ticker)]
-            low = df_calc[('Low', ticker)]
+            volume = df_calc[('Volume', ticker)]
             
-            # RSI 14
+            # RSI
             delta = close.diff()
             ganho = delta.clip(lower=0).rolling(14).mean()
             perda = -delta.clip(upper=0).rolling(14).mean()
             rs = ganho / perda
             df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
-
-            # ESTOCÁSTICO 14 (%K) - Novo!
-            # Fórmula: (Close - Lowest_Low) / (Highest_High - Lowest_Low) * 100
-            lowest_low = low.rolling(window=14).min()
-            highest_high = high.rolling(window=14).max()
-            stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
-            df_calc[('Stoch_K', ticker)] = stoch_k
 
             # Médias e Bollinger
             df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
@@ -110,6 +102,7 @@ def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
     
+    # Classificação
     def classificar(s):
         if s >= 4: return "Muito Alta"
         if s >= 2: return "Alta"
@@ -119,38 +112,28 @@ def gerar_sinal(row_ticker, df_ticker):
     try:
         close = row_ticker.get('Close')
         rsi = row_ticker.get('RSI14')
-        stoch = row_ticker.get('Stoch_K') # Novo
         macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
         
-        # Sinais de Reversão
-        if pd.notna(rsi):
-            if rsi < 30:
-                sinais.append("RSI Oversold")
-                score += 3
-            elif rsi < 40:
-                score += 1
-        
-        if pd.notna(stoch):
-            if stoch < 20:
-                sinais.append("Stoch. Fundo")
-                score += 2
+        # Pontuação
+        if pd.notna(rsi) and rsi < 30:
+            sinais.append("RSI Oversold")
+            score += 3
+        elif pd.notna(rsi) and rsi < 40:
+            score += 1
             
         if pd.notna(macd_hist) and macd_hist > 0:
-            sinais.append("MACD Virando")
+            sinais.append("MACD Positivo")
             score += 1
             
         if pd.notna(close) and pd.notna(bb_lower):
-            if close < bb_lower:
-                sinais.append("Abaixo BB")
-                score += 2
-            elif close < bb_lower * 1.02:
+            if close < bb_lower * 1.02:
                 sinais.append("Suporte BB")
-                score += 1
+                score += 2
 
         fibo = calcular_fibonacci(df_ticker)
         if fibo and (fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01):
-            sinais.append("Fibo 61.8%")
+            sinais.append("Fibo Golden Zone")
             score += 2
 
         return sinais, score, classificar(score)
@@ -172,7 +155,6 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             preco = last.get('Close')
             preco_ant = anterior.get('Close')
             preco_open = last.get('Open')
-            volume = last.get('Volume')
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
@@ -189,35 +171,18 @@ def analisar_oportunidades(df_calc, mapa_nomes):
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
             
-            # --- CÁLCULO ÍNDICE DE SOBREVENDA (I.S.) ---
-            # Quanto maior, mais sobrevendido (melhor para reversão)
-            # Baseado em RSI invertido e Estocástico invertido
-            rsi = last.get('RSI14', 50)
-            stoch = last.get('Stoch_K', 50)
-            
-            # Normaliza para 0-100 onde 100 é o fundo do poço
-            # Se RSI = 30 -> (100-30) = 70 pontos
-            # Se Stoch = 10 -> (100-10) = 90 pontos
-            is_index = ((100 - rsi) + (100 - stoch)) / 2
-            
-            # Tratamento de Nome
             nome_completo = mapa_nomes.get(ticker, ticker)
-            palavras = nome_completo.split()
-            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS']
-            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
-            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
-            nome_curto = nome_curto.replace(',', '').title()
+            nome_curto = nome_completo.split()[0] if nome_completo else ticker
+            nome_curto = nome_curto.replace(',', '').replace('.', '')
 
             resultados.append({
                 'Ticker': ticker,
                 'Empresa': nome_curto,
                 'Preco': preco,
-                'Volume': volume,
                 'Queda_Dia': queda_dia,
                 'Gap': gap,
-                'IS': is_index, # Novo Índice
-                'RSI14': rsi,
-                'Stoch': stoch,
+                'Var_7D': var_7d,
+                'RSI14': last.get('RSI14', np.nan),
                 'Potencial': classificacao,
                 'Score': score,
                 'Sinais': ", ".join(sinais) if sinais else "-"
@@ -225,23 +190,21 @@ def analisar_oportunidades(df_calc, mapa_nomes):
         except: continue
     return resultados
 
-def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
+def plotar_grafico(df_ticker, ticker, empresa, rsi):
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
     
     close = df_ticker['Close']
     
-    # Preço
     ax1 = axes[0]
     ax1.plot(close.index, close.values, label='Close', color='#333333')
     ax1.plot(close.index, df_ticker['EMA20'], label='EMA20', alpha=0.7, color='blue', linewidth=1)
     ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.15, color='gray')
-    ax1.set_title(f'{ticker} - {empresa} | I.S.: {is_val:.0f}', fontweight='bold')
+    ax1.set_title(f'{ticker} - {empresa}', fontweight='bold')
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
 
-    # RSI
     ax2 = axes[1]
-    ax2.plot(close.index, df_ticker['RSI14'], color='orange', label='RSI')
+    ax2.plot(close.index, df_ticker['RSI14'], color='orange')
     ax2.axhline(30, color='red', linestyle='--', linewidth=1)
     ax2.axhline(70, color='green', linestyle='--', linewidth=1)
     ax2.fill_between(close.index, 0, 30, alpha=0.2, color='red')
@@ -249,47 +212,26 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     ax2.set_ylim(0, 100)
     ax2.grid(True, alpha=0.3)
     
-    # Estocástico
-    ax3 = axes[2]
-    if 'Stoch_K' in df_ticker.columns:
-        ax3.plot(close.index, df_ticker['Stoch_K'], color='purple', label='Stoch %K')
-        ax3.axhline(20, color='red', linestyle='--', linewidth=1)
-        ax3.axhline(80, color='green', linestyle='--', linewidth=1)
-        ax3.fill_between(close.index, 0, 20, alpha=0.2, color='red')
-    ax3.set_ylabel('Stoch')
-    ax3.set_ylim(0, 100)
-    ax3.grid(True, alpha=0.3)
-    
     plt.tight_layout()
     return fig
 
-# Função para colorir o IS (Índice de Sobrevenda)
-def estilizar_is(val):
-    color = ''
-    if val >= 75: # Extrema sobrevenda
-        color = 'background-color: #d32f2f; color: white; font-weight: bold' # Vermelho (alerta oportunidade)
-    elif val >= 60:
-        color = 'background-color: #ffa726; color: black' # Laranja
-    else:
-        color = 'color: #888888' # Cinza apagado
-    return color
-
+# Função para colorir a tabela
 def estilizar_potencial(val):
     color = ''
     if val == 'Muito Alta':
-        color = 'background-color: #2e7d32; color: white; font-weight: bold' 
+        color = 'background-color: #2e7d32; color: white; font-weight: bold' # Verde escuro
     elif val == 'Alta':
-        color = 'background-color: #66bb6a; color: black; font-weight: bold'
+        color = 'background-color: #66bb6a; color: black; font-weight: bold' # Verde claro
     elif val == 'Média':
-        color = 'background-color: #ffa726; color: black'
+        color = 'background-color: #ffa726; color: black' # Laranja
     elif val == 'Baixa':
-        color = 'background-color: #e0e0e0; color: black' 
+        color = 'background-color: #e0e0e0; color: black' # Cinza
     return color
 
 # --- LAYOUT DO APP ---
 
 st.title("📉 Monitor BDR - Swing Trade")
-st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
+st.markdown("Rastreamento de BDRs em queda com análise de potencial de compra.")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
     with st.spinner("Conectando à API e baixando dados..."):
@@ -303,35 +245,27 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
             
-            # ORDENAÇÃO: Queda do Dia
+            # ORDENAÇÃO: Queda do Dia (Ascendente = maior queda negativa primeiro)
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
             
-            st.success(f"{len(oportunidades)} oportunidades encontradas!")
+            st.success(f"{len(oportunidades)} oportunidades encontradas! (Ordenado por Maior Queda)")
             
-            # --- TABELA INTERATIVA ---
+            # --- TABELA INTERATIVA COLORIDA ---
+            # Aplicamos o estilo (cores) antes de enviar para o Streamlit
             st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
-                            .map(estilizar_is, subset=['IS'])
                 .format({
                     'Preco': 'R$ {:.2f}',
-                    'Volume': '{:,.0f}',
                     'Queda_Dia': '{:.2f}%',
                     'Gap': '{:.2f}%',
-                    'IS': '{:.0f}',
-                    'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'
+                    'Var_7D': '{:.2f}%',
+                    'RSI14': '{:.1f}'
                 }),
-                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
-                    "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
-                    "IS": st.column_config.NumberColumn(
-                        "I.S.", 
-                        help="Índice de Sobrevenda (0-100). Quanto maior, mais 'esticado' para baixo (bom para reversão). Baseado em RSI + Estocástico."
+                    "Score": st.column_config.ProgressColumn(
+                        "Força", format="%d", min_value=0, max_value=10
                     ),
-                    "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
-                    "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
-                    "Potencial": st.column_config.Column("Sinal"),
-                    "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large")
+                    "Potencial": st.column_config.Column("Sinal")
                 },
                 use_container_width=True,
                 hide_index=True
@@ -339,7 +273,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             
             # --- TOP 5 (MAIORES QUEDAS) ---
             st.divider()
-            st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
+            st.subheader("🔍 Top 5 Maiores Quedas")
             
             top5 = df_res.head(5)
             
@@ -351,22 +285,19 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
-                        fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'], row['IS'])
+                        fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'])
                         st.pyplot(fig)
                         
                     with col2:
+                        # Exibindo o potencial com cor visualmente
                         potencial = row['Potencial']
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
                         
                         st.markdown(f"### {cor_bola} {potencial}")
                         st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
-                        
-                        # Destaque do Índice de Sobrevenda
-                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100", 
-                                  delta="Esticado" if row['IS'] > 70 else None)
-                        
+                        st.metric("Gap", f"{row['Gap']:.2f}%")
                         st.write(f"**Score:** {row['Score']}/10")
-                        st.info(f"📋 **Sinais:** {row['Sinais']}")
+                        st.caption(f"Sinais: {row['Sinais']}")
                         
                     st.divider()
                 except Exception: continue
