@@ -5,17 +5,14 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
-import urllib.parse
 from datetime import datetime
 import pytz
 import warnings
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-VERSAO_APP = "v4.0 (Motor v23 + Visual Novo)"
-
 st.set_page_config(
-    page_title=f"Monitor BDR {VERSAO_APP}",
-    page_icon="🦅",
+    page_title="Monitor BDRs - Swing Trade",
+    page_icon="📉",
     layout="wide"
 )
 
@@ -23,114 +20,80 @@ warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
-PERIODO = "1y" 
+PERIODO = "6mo"
 TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
-# --- GERENCIAMENTO DE SEGREDOS ---
-try:
-    WHATSAPP_PHONE = st.secrets["WHATSAPP_PHONE"]
-    WHATSAPP_APIKEY = st.secrets["WHATSAPP_APIKEY"]
-    BRAPI_API_TOKEN = st.secrets["BRAPI_API_TOKEN"]
-except Exception:
-    st.error("❌ ERRO CRÍTICO: Chaves de API não encontradas!")
-    st.stop()
-
-# --- SESSÃO ---
-if 'dados_carregados' not in st.session_state:
-    st.session_state.dados_carregados = False
-if 'df_resultado' not in st.session_state:
-    st.session_state.df_resultado = pd.DataFrame()
-if 'df_calculado' not in st.session_state:
-    st.session_state.df_calculado = pd.DataFrame()
-
-# --- FUNÇÕES AUXILIARES ---
-def obter_hora_brasil():
-    fuso = pytz.timezone('America/Sao_Paulo')
-    return datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')
-
-def enviar_whatsapp_textmebot(mensagem):
-    try:
-        texto_codificado = urllib.parse.quote(mensagem)
-        phone = WHATSAPP_PHONE.strip()
-        if not phone.startswith("+"): phone = "+" + phone
-        url = f"https://api.textmebot.com/send.php?recipient={phone}&apikey={WHATSAPP_APIKEY}&text={texto_codificado}"
-        r = requests.get(url, timeout=30)
-        if r.status_code == 200: return True, "Enviado!"
-        else: return False, f"Erro {r.status_code}"
-    except Exception as e: return False, str(e)
-
-# --- COLETA DE DADOS (MOTOR DA VERSÃO 23) ---
-# Esta é a lógica exata que estava no seu arquivo "app quedas versão 23.py"
+# --- FUNÇÕES ---
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
+        url = "https://brapi.dev/api/quote/list"
         r = requests.get(url, timeout=30)
         dados = r.json().get('stocks', [])
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
         return lista_tickers, mapa_nomes
-    except Exception: return [], {}
+    except Exception as e:
+        st.error(f"Erro ao buscar BRAPI: {e}")
+        return [], {}
 
+@st.cache_data(ttl=1800)
 def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
     try:
-        # Lógica v23: Baixa tudo de uma vez com ignore_tz=True
-        # Isso costuma ser mais robusto para alinhar datas
-        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, ignore_tz=True)
-        
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
         if df.empty: return pd.DataFrame()
-        
-        # Tratamento de MultiIndex robusto da v23
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
-        elif isinstance(df.index, pd.DatetimeIndex) and len(tickers) == 1:
-            df.columns = pd.MultiIndex.from_product([df.columns, [tickers[0]]])
-            
         return df.dropna(axis=1, how='all')
-    except Exception as e:
-        print(f"Erro download: {e}")
-        return pd.DataFrame()
-
-# --- CÁLCULOS (VISUAL NOVO) ---
+    except Exception: return pd.DataFrame()
 
 def calcular_indicadores(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
     
-    # Barra de progresso para dar feedback visual
     progresso = st.progress(0)
     total = len(tickers)
     
     for i, ticker in enumerate(tickers):
-        if i % 10 == 0: progresso.progress((i + 1) / total)
+        progresso.progress((i + 1) / total)
         try:
             close = df_calc[('Close', ticker)]
             high = df_calc[('High', ticker)]
             low = df_calc[('Low', ticker)]
             
+            # RSI 14
             delta = close.diff()
             ganho = delta.clip(lower=0).rolling(14).mean()
             perda = -delta.clip(upper=0).rolling(14).mean()
             rs = ganho / perda
             df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
 
-            lowest_low = low.rolling(14).min()
-            highest_high = high.rolling(14).max()
-            df_calc[('Stoch_K', ticker)] = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+            # ESTOCÁSTICO 14 (%K) - Novo!
+            # Fórmula: (Close - Lowest_Low) / (Highest_High - Lowest_Low) * 100
+            lowest_low = low.rolling(window=14).min()
+            highest_high = high.rolling(window=14).max()
+            stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+            df_calc[('Stoch_K', ticker)] = stoch_k
 
-            df_calc[('SMA200', ticker)] = close.rolling(window=200).mean()
-            
-            sma20 = close.rolling(20).mean()
-            std = close.rolling(20).std()
-            df_calc[('BB_Lower', ticker)] = sma20 - (std * 2)
-            df_calc[('BB_Upper', ticker)] = sma20 + (std * 2)
+            # Médias e Bollinger
             df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
+            sma = close.rolling(20).mean()
+            std = close.rolling(20).std()
+            df_calc[('BB_Lower', ticker)] = sma - (std * 2)
+            df_calc[('BB_Upper', ticker)] = sma + (std * 2)
+
+            # MACD
+            ema_12 = close.ewm(span=12).mean()
+            ema_26 = close.ewm(span=26).mean()
+            macd = ema_12 - ema_26
+            signal = macd.ewm(span=9).mean()
+            df_calc[('MACD_Hist', ticker)] = macd - signal
         except: continue
-        
+            
     progresso.empty()
     return df_calc
 
@@ -148,51 +111,51 @@ def gerar_sinal(row_ticker, df_ticker):
     score = 0
     
     def classificar(s):
-        if s >= 4: return "💎 Ouro"
-        if s >= 2: return "🥈 Prata"
-        if s >= 1: return "🥉 Bronze"
-        return "⚪ Neutro"
+        if s >= 4: return "Muito Alta"
+        if s >= 2: return "Alta"
+        if s >= 1: return "Média"
+        return "Baixa"
 
     try:
         close = row_ticker.get('Close')
-        sma200 = row_ticker.get('SMA200')
         rsi = row_ticker.get('RSI14')
-        stoch = row_ticker.get('Stoch_K')
+        stoch = row_ticker.get('Stoch_K') # Novo
+        macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
         
-        tendencia_alta = False
-        if pd.notna(sma200) and pd.notna(close):
-            if close > sma200:
-                tendencia_alta = True
-                sinais.append("Trend Alta")
-                score += 3
-            else:
-                sinais.append("Trend Baixa")
-
+        # Sinais de Reversão
         if pd.notna(rsi):
             if rsi < 30:
-                sinais.append("RSI Baixo")
+                sinais.append("RSI Oversold")
                 score += 3
             elif rsi < 40:
                 score += 1
         
-        if pd.notna(stoch) and stoch < 20:
-            sinais.append("Stoch Fundo")
-            score += 2
+        if pd.notna(stoch):
+            if stoch < 20:
+                sinais.append("Stoch. Fundo")
+                score += 2
+            
+        if pd.notna(macd_hist) and macd_hist > 0:
+            sinais.append("MACD Virando")
+            score += 1
             
         if pd.notna(close) and pd.notna(bb_lower):
-            if close < bb_lower * 1.02:
-                sinais.append("BB Suporte")
+            if close < bb_lower:
+                sinais.append("Abaixo BB")
+                score += 2
+            elif close < bb_lower * 1.02:
+                sinais.append("Suporte BB")
                 score += 1
 
         fibo = calcular_fibonacci(df_ticker)
         if fibo and (fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01):
-            sinais.append("Fibo 61.8")
+            sinais.append("Fibo 61.8%")
             score += 2
 
-        return sinais, score, classificar(score), tendencia_alta
+        return sinais, score, classificar(score)
     except:
-        return [], 0, "Indefinida", False
+        return [], 0, "Indefinida"
 
 def analisar_oportunidades(df_calc, mapa_nomes):
     resultados = []
@@ -201,7 +164,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
     for ticker in tickers:
         try:
             df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
-            if len(df_ticker) < 200: continue
+            if len(df_ticker) < 50: continue
 
             last = df_ticker.iloc[-1]
             anterior = df_ticker.iloc[-2]
@@ -210,27 +173,40 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             preco_ant = anterior.get('Close')
             preco_open = last.get('Open')
             volume = last.get('Volume')
-            sma200 = last.get('SMA200')
             
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
-            # Filtro de Queda
+            # Variações
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
-            if queda_dia >= 0: continue 
-            
             gap = ((preco_open - preco_ant) / preco_ant) * 100
+            
+            var_7d = np.nan
+            if len(df_ticker) > 6:
+                preco_7d = df_ticker['Close'].iloc[-6]
+                var_7d = ((preco - preco_7d) / preco_7d) * 100
 
-            sinais, score, classificacao, tendencia_alta = gerar_sinal(last, df_ticker)
+            if queda_dia >= 0: continue 
 
+            sinais, score, classificacao = gerar_sinal(last, df_ticker)
+            
+            # --- CÁLCULO ÍNDICE DE SOBREVENDA (I.S.) ---
+            # Quanto maior, mais sobrevendido (melhor para reversão)
+            # Baseado em RSI invertido e Estocástico invertido
             rsi = last.get('RSI14', 50)
             stoch = last.get('Stoch_K', 50)
+            
+            # Normaliza para 0-100 onde 100 é o fundo do poço
+            # Se RSI = 30 -> (100-30) = 70 pontos
+            # Se Stoch = 10 -> (100-10) = 90 pontos
             is_index = ((100 - rsi) + (100 - stoch)) / 2
-            dist_sma200 = ((preco - sma200) / sma200) * 100 if pd.notna(sma200) else 0
-
+            
+            # Tratamento de Nome
             nome_completo = mapa_nomes.get(ticker, ticker)
-            nome_curto = nome_completo.split()[0].replace(',', '').title()
-
-            status_visual = "⭐ STRATEGY" if tendencia_alta else "⚠️ Contra-Tend."
+            palavras = nome_completo.split()
+            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS']
+            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
+            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
+            nome_curto = nome_curto.replace(',', '').title()
 
             resultados.append({
                 'Ticker': ticker,
@@ -239,112 +215,86 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Volume': volume,
                 'Queda_Dia': queda_dia,
                 'Gap': gap,
-                'IS': is_index,
-                'Dist_SMA200': dist_sma200,
+                'IS': is_index, # Novo Índice
                 'RSI14': rsi,
-                'Setup': status_visual,
-                'Tendencia_Alta': tendencia_alta,
+                'Stoch': stoch,
                 'Potencial': classificacao,
                 'Score': score,
-                'Sinais': ", ".join(sinais)
+                'Sinais': ", ".join(sinais) if sinais else "-"
             })
         except: continue
     return resultados
 
-def plotar_grafico(df_ticker, ticker, empresa, is_val, tendencia_alta):
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
+def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
     
     close = df_ticker['Close']
-    sma200 = df_ticker['SMA200']
     
+    # Preço
     ax1 = axes[0]
-    ax1.plot(close.index, close.values, label='Preço', color='#333333', linewidth=1.5)
-    cor_sma = '#FFD700' if tendencia_alta else '#FF5252'
-    ax1.plot(close.index, sma200, label='SMA 200', color=cor_sma, linewidth=2.5)
-    ax1.plot(close.index, df_ticker['EMA20'], label='EMA 20', color='blue', alpha=0.5)
-    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.1, color='gray')
-    ax1.set_title(f'{ticker} - {empresa}', fontweight='bold')
-    ax1.legend(loc='best')
+    ax1.plot(close.index, close.values, label='Close', color='#333333')
+    ax1.plot(close.index, df_ticker['EMA20'], label='EMA20', alpha=0.7, color='blue', linewidth=1)
+    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.15, color='gray')
+    ax1.set_title(f'{ticker} - {empresa} | I.S.: {is_val:.0f}', fontweight='bold')
+    ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
 
+    # RSI
     ax2 = axes[1]
-    ax2.plot(close.index, df_ticker['RSI14'], color='orange')
-    ax2.axhline(30, color='red', linestyle='--')
-    ax2.axhline(70, color='green', linestyle='--')
+    ax2.plot(close.index, df_ticker['RSI14'], color='orange', label='RSI')
+    ax2.axhline(30, color='red', linestyle='--', linewidth=1)
+    ax2.axhline(70, color='green', linestyle='--', linewidth=1)
+    ax2.fill_between(close.index, 0, 30, alpha=0.2, color='red')
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
+    ax2.grid(True, alpha=0.3)
     
+    # Estocástico
     ax3 = axes[2]
     if 'Stoch_K' in df_ticker.columns:
-        ax3.plot(close.index, df_ticker['Stoch_K'], color='purple')
-        ax3.axhline(20, color='red', linestyle='--')
-        ax3.axhline(80, color='green', linestyle='--')
+        ax3.plot(close.index, df_ticker['Stoch_K'], color='purple', label='Stoch %K')
+        ax3.axhline(20, color='red', linestyle='--', linewidth=1)
+        ax3.axhline(80, color='green', linestyle='--', linewidth=1)
+        ax3.fill_between(close.index, 0, 20, alpha=0.2, color='red')
     ax3.set_ylabel('Stoch')
     ax3.set_ylim(0, 100)
+    ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
     return fig
 
+# Função para colorir o IS (Índice de Sobrevenda)
 def estilizar_is(val):
-    if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold'
-    elif val >= 60: return 'background-color: #ffa726; color: black'
-    return 'color: #888888'
+    color = ''
+    if val >= 75: # Extrema sobrevenda
+        color = 'background-color: #d32f2f; color: white; font-weight: bold' # Vermelho (alerta oportunidade)
+    elif val >= 60:
+        color = 'background-color: #ffa726; color: black' # Laranja
+    else:
+        color = 'color: #888888' # Cinza apagado
+    return color
 
-def estilizar_setup(val):
-    if "STRATEGY" in val:
-        return 'background-color: #1b5e20; color: white; font-weight: bold; border-radius: 5px'
-    return 'color: #757575'
+def estilizar_potencial(val):
+    color = ''
+    if val == 'Muito Alta':
+        color = 'background-color: #2e7d32; color: white; font-weight: bold' 
+    elif val == 'Alta':
+        color = 'background-color: #66bb6a; color: black; font-weight: bold'
+    elif val == 'Média':
+        color = 'background-color: #ffa726; color: black'
+    elif val == 'Baixa':
+        color = 'background-color: #e0e0e0; color: black' 
+    return color
 
-def formatar_msg_whatsapp(df_res, hora):
-    top = df_res.head(10)
-    msg = f"🦅 *RELATÓRIO DE QUEDAS*\n"
-    msg += f"🗓️ {hora}\n"
-    qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
-    msg += f"🚨 *{len(df_res)}* Total | ⭐ *{qtd_strategy}* Estratégia\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
-    for _, row in top.iterrows():
-        icon = "⭐" if row['Tendencia_Alta'] else "🔻"
-        msg += f"{icon} *{row['Ticker']}* ({row['Queda_Dia']:.1f}%)\n"
-        msg += f"   💰 R${row['Preco']:.2f} | 📊 I.S.: {row['IS']:.0f}\n"
-        sinais = row['Sinais'] if row['Sinais'] else "Queda"
-        msg += f"   🛠 {sinais}\n" 
-        msg += "   ────────────────\n"
-    msg += "\n🔗 _Acesse o App para gráficos_"
-    return msg
+# --- LAYOUT DO APP ---
 
-def exibir_legendas():
-    with st.expander("ℹ️ ENTENDA OS SINAIS E INDICADORES (CLIQUE AQUI)"):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("""
-            **📊 Indicadores:**
-            * **I.S. (Índice de Sobrevenda):** Varia de 0 a 100. Vermelho (>80) = Muito barato.
-            * **RSI (IFR):** Abaixo de 30 = Sobrevendido.
-            * **Stoch (Estocástico):** Abaixo de 20 = Fundo.
-            """)
-        with c2:
-            st.markdown("""
-            **🛠 Sinais Técnicos:**
-            * **Trend Alta:** Preço acima da Média de 200.
-            * **BB Suporte:** Preço tocou na banda inferior.
-            * **Fibo 61.8:** Retração de ouro.
-            """)
-            st.info("⭐ **Estratégia Ouro:** Trend Alta + Queda forte.")
+st.title("📉 Monitor BDR - Swing Trade")
+st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
-# --- LAYOUT PRINCIPAL ---
-
-st.title(f"🦅 Monitor BDR - Swing Trade")
-exibir_legendas()
-
-col_btn1, col_btn2 = st.columns([1, 4])
-with col_btn1:
-    btn_analisar = st.button("🔄 Rastrear Mercado", type="primary")
-
-if btn_analisar:
-    # --- USANDO O MOTOR V23 ---
-    with st.spinner("Baixando dados (Motor v23)..."):
+if st.button("🔄 Atualizar Análise", type="primary"):
+    with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
-        df = buscar_dados(lista_bdrs) # Função que veio do arquivo v23
+        df = buscar_dados(lista_bdrs)
         
     if not df.empty:
         df_calc = calcular_indicadores(df)
@@ -352,70 +302,75 @@ if btn_analisar:
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
-            df_res = df_res.sort_values(by=['Tendencia_Alta', 'Queda_Dia'], ascending=[False, True])
             
-            st.session_state.dados_carregados = True
-            st.session_state.df_resultado = df_res
-            st.session_state.df_calculado = df_calc
-            st.toast("Análise concluída!", icon="✅")
-        else:
-            st.warning("Nenhuma oportunidade encontrada.")
-            st.session_state.dados_carregados = False
-    else:
-        st.error("Não foi possível baixar dados. O Yahoo pode estar instável.")
-
-# 3. EXIBIÇÃO DOS DADOS (VISUAL NOVO MANTIDO)
-if st.session_state.dados_carregados:
-    df_res = st.session_state.df_resultado
-    df_calc = st.session_state.df_calculado
-    
-    qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Oportunidades", len(df_res))
-    m2.metric("Estratégia Ouro", qtd_strategy)
-    
-    if m3.button("📱 Enviar Relatório WhatsApp"):
-        hora_atual = obter_hora_brasil()
-        msg_zap = formatar_msg_whatsapp(df_res, hora_atual)
-        with st.spinner("Enviando via TextMeBot..."):
-            sucesso, retorno = enviar_whatsapp_textmebot(msg_zap)
-            if sucesso: st.success("Enviado!")
-            else: st.error(f"Erro: {retorno}")
-    
-    st.divider()
-    
-    # Tabela Formatada com Volume Inteiro
-    st.dataframe(
-        df_res.style.map(estilizar_setup, subset=['Setup'])
-                    .map(estilizar_is, subset=['IS'])
-        .format({
-            'Preco': 'R$ {:.2f}',
-            'Queda_Dia': '{:.2f}%',
-            'Gap': '{:.2f}%',
-            'Dist_SMA200': '{:.2f}%',
-            'IS': '{:.0f}'
-        }),
-        column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "Gap", "IS", "Volume", "Sinais"),
-        column_config={
-            "Setup": st.column_config.Column("Estratégia", width="medium"),
-            "Volume": st.column_config.NumberColumn("Volume", format="%d"),
-            "IS": st.column_config.NumberColumn("I.S.", help="0-100"),
-            "Sinais": st.column_config.TextColumn("Motivos", width="large")
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    st.divider()
-    st.subheader("🎯 Gráficos (Top 5 Estratégia)")
-    
-    top_graficos = df_res.head(5)
-    for _, row in top_graficos.iterrows():
-        try:
-            df_ticker = df_calc.xs(row['Ticker'], axis=1, level=1).dropna()
-            icon = "⭐" if row['Tendencia_Alta'] else "⚠️"
-            st.markdown(f"### {icon} {row['Ticker']} - {row['Empresa']}")
-            fig = plotar_grafico(df_ticker, row['Ticker'], row['Empresa'], row['IS'], row['Tendencia_Alta'])
-            st.pyplot(fig)
+            # ORDENAÇÃO: Queda do Dia
+            df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
+            
+            st.success(f"{len(oportunidades)} oportunidades encontradas!")
+            
+            # --- TABELA INTERATIVA ---
+            st.dataframe(
+                df_res.style.map(estilizar_potencial, subset=['Potencial'])
+                            .map(estilizar_is, subset=['IS'])
+                .format({
+                    'Preco': 'R$ {:.2f}',
+                    'Volume': '{:,.0f}',
+                    'Queda_Dia': '{:.2f}%',
+                    'Gap': '{:.2f}%',
+                    'IS': '{:.0f}',
+                    'RSI14': '{:.0f}',
+                    'Stoch': '{:.0f}'
+                }),
+                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
+                column_config={
+                    "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
+                    "IS": st.column_config.NumberColumn(
+                        "I.S.", 
+                        help="Índice de Sobrevenda (0-100). Quanto maior, mais 'esticado' para baixo (bom para reversão). Baseado em RSI + Estocástico."
+                    ),
+                    "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
+                    "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
+                    "Potencial": st.column_config.Column("Sinal"),
+                    "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # --- TOP 5 (MAIORES QUEDAS) ---
             st.divider()
-        except: continue
+            st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
+            
+            top5 = df_res.head(5)
+            
+            for _, row in top5.iterrows():
+                ticker = row['Ticker']
+                try:
+                    df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
+                    
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'], row['IS'])
+                        st.pyplot(fig)
+                        
+                    with col2:
+                        potencial = row['Potencial']
+                        cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
+                        
+                        st.markdown(f"### {cor_bola} {potencial}")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
+                        
+                        # Destaque do Índice de Sobrevenda
+                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100", 
+                                  delta="Esticado" if row['IS'] > 70 else None)
+                        
+                        st.write(f"**Score:** {row['Score']}/10")
+                        st.info(f"📋 **Sinais:** {row['Sinais']}")
+                        
+                    st.divider()
+                except Exception: continue
+        else:
+            st.warning("Nenhuma BDR em queda encontrada hoje.")
+    else:
+        st.error("Erro ao carregar dados.")
