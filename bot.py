@@ -10,7 +10,7 @@ import pytz
 # --- CONFIGURAÇÕES ---
 try:
     WHATSAPP_PHONE = os.environ["WHATSAPP_PHONE"]
-    WHATSAPP_APIKEY = os.environ["WHATSAPP_APIKEY"]
+    WHATSAPP_APIKEY = os.environ["WHATSAPP_APIKEY"] # Agora é a chave do TextMeBot
     BRAPI_API_TOKEN = os.environ["BRAPI_API_TOKEN"]
 except KeyError:
     print("Erro: Chaves de API não encontradas nas variáveis de ambiente.")
@@ -26,29 +26,28 @@ def obter_hora_brasil():
     return datetime.now(fuso).strftime('%d/%m/%Y %H:%M:%S')
 
 def enviar_whatsapp(mensagem):
-    print(f"Tentando enviar mensagem via GET...")
+    print(f"Tentando enviar mensagem via TextMeBot...")
     try:
-        # Codifica o texto para URL (transforma espaços em %20, etc)
+        # 1. Codifica o texto para URL
         texto_codificado = urllib.parse.quote(mensagem)
         
-        # Garante que o telefone não tenha o +
-        phone_clean = WHATSAPP_PHONE.replace("+", "").strip()
+        # 2. Formata o telefone (TextMeBot prefere formato internacional +55...)
+        phone = WHATSAPP_PHONE.strip()
+        if not phone.startswith("+"):
+            phone = "+" + phone
+            
+        # 3. Nova URL do TextMeBot
+        # Parâmetros: recipient (telefone), apikey, text
+        url = f"https://api.textmebot.com/send.php?recipient={phone}&apikey={WHATSAPP_APIKEY}&text={texto_codificado}"
         
-        # URL (Estilo Azure/Navegador)
-        url = f"https://api.callmebot.com/whatsapp.php?phone={phone_clean}&text={texto_codificado}&apikey={WHATSAPP_APIKEY}"
-        
+        # Envio
         r = requests.get(url, timeout=30)
         
-        # 200 = Sucesso | 201 = Na Fila (Sucesso) | 208 = Spam (Conectado, mas repetido)
-        if r.status_code == 200 or r.status_code == 201:
+        if r.status_code == 200:
             print("✅ Mensagem enviada com sucesso!")
             return True
-        elif r.status_code == 208:
-            print("⚠️ Aviso: Bloqueio de Spam (208). Mensagem muito parecida com a anterior.")
-            print("✅ A CONEXÃO ESTÁ FUNCIONANDO! Só precisa esperar um pouco para enviar de novo.")
-            return True # Consideramos sucesso técnico
         else:
-            print(f"❌ Erro API CallMeBot: {r.status_code} - {r.text}")
+            print(f"❌ Erro TextMeBot: {r.status_code} - {r.text}")
             return False
             
     except Exception as e:
@@ -56,18 +55,22 @@ def enviar_whatsapp(mensagem):
         return False
 
 def obter_dados_brapi():
-    url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
-    r = requests.get(url, timeout=30)
-    dados = r.json().get('stocks', [])
-    bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
-    lista_tickers = [d['stock'] for d in bdrs_raw]
-    mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
-    return lista_tickers, mapa_nomes
+    try:
+        url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
+        r = requests.get(url, timeout=30)
+        dados = r.json().get('stocks', [])
+        bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
+        lista_tickers = [d['stock'] for d in bdrs_raw]
+        mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
+        return lista_tickers, mapa_nomes
+    except: return [], {}
 
 def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
-    df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=120, threads=True)
+    try:
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=120, threads=True)
+    except: return pd.DataFrame()
     
     if df.empty: return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -113,14 +116,14 @@ def calcular_tudo(df):
             is_index = ((100 - last_rsi) + (100 - last_stoch)) / 2
             
             sinais = []
-            if tendencia_alta: sinais.append("Trend Alta")
-            if last_rsi < 30: sinais.append("RSI Baixo")
-            if last_stoch < 20: sinais.append("Stoch Fundo")
+            if tendencia_alta: sinais.append("Alta")
+            if last_rsi < 30: sinais.append("RSI")
+            if last_stoch < 20: sinais.append("Stoch")
             
             sma20 = close.rolling(20).mean()
             std = close.rolling(20).std()
             bb_lower = sma20 - (std * 2)
-            if last_close < bb_lower.iloc[-1] * 1.02: sinais.append("BB Suporte")
+            if last_close < bb_lower.iloc[-1] * 1.02: sinais.append("BB")
 
             resultados.append({
                 'Ticker': ticker,
@@ -128,26 +131,22 @@ def calcular_tudo(df):
                 'Queda_Dia': queda_dia,
                 'IS': is_index,
                 'Tendencia_Alta': tendencia_alta,
-                'Sinais': ", ".join(sinais)
+                'Sinais': " ".join(sinais)
             })
-        except Exception: continue
+        except: continue
         
     return pd.DataFrame(resultados)
 
 # --- EXECUÇÃO PRINCIPAL ---
 
 if __name__ == "__main__":
-    print("🤖 Iniciando Bot BDR (Modo GET + Anti-Spam)...")
+    print("🤖 Iniciando Bot BDR (TextMeBot)...")
     hora = obter_hora_brasil()
     
-    print("1. Buscando lista na BRAPI...")
     tickers, mapa_nomes = obter_dados_brapi()
-    
-    print(f"2. Baixando dados de {len(tickers)} ativos via Yahoo...")
     df_market = buscar_dados(tickers)
     
     if not df_market.empty:
-        print("3. Calculando indicadores...")
         df_res = calcular_tudo(df_market)
         
         if not df_res.empty:
@@ -155,26 +154,24 @@ if __name__ == "__main__":
             top10 = df_res.head(10)
             qtd_strategy = df_res[df_res['Tendencia_Alta'] == True].shape[0]
             
-            # --- ID ÚNICO NO INÍCIO ---
-            # Colocamos o timestamp no topo para o CallMeBot ver que é texto novo logo de cara
-            timestamp_id = int(time.time())
-            
-            msg = f"🦅 *BDR ALERT* (ID:{timestamp_id})\n"
+            # Formatação limpa para o TextMeBot
+            msg = f"🦅 *BDR ALERT*\n"
             msg += f"🗓️ {hora}\n"
             msg += f"🚨 *{len(df_res)}* Quedas | ⭐ *{qtd_strategy}* Estratégia\n\n"
             
             for _, row in top10.iterrows():
                 nome = mapa_nomes.get(row['Ticker'], row['Ticker']).split()[0]
                 icon = "⭐" if row['Tendencia_Alta'] else "🔻"
-                sinais_texto = row['Sinais'] if row['Sinais'] else "-"
+                sinais = row['Sinais'] if row['Sinais'] else "-"
                 
-                msg += f"{icon} *{row['Ticker']}* - {nome}\n"
-                msg += f"   📉 {row['Queda_Dia']:.1f}% | 💵 R${row['Preco']:.2f}\n"
-                msg += f"   📊 I.S. {row['IS']:.0f} | {sinais_texto}\n"
-                msg += "   - - - - - - - -\n"
+                msg += f"{icon} *{row['Ticker']}* ({row['Queda_Dia']:.1f}%)\n"
+                msg += f"   💰 R${row['Preco']:.2f} | 📊 IS:{row['IS']:.0f}\n"
+                msg += f"   🛠 {sinais}\n"
+                msg += "   ──────────\n"
             
-            msg += "\n🔗 _Ver gráficos no App_"
+            msg += "\n💡 _Use com sabedoria._"
             
+            # Envia
             enviar_whatsapp(msg)
         else:
             print("Nenhuma oportunidade encontrada hoje.")
