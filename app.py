@@ -5,14 +5,16 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, timedelta
 import pytz
 import warnings
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
+VERSAO = "v5.0 (Completa)"
 st.set_page_config(
-    page_title="Monitor BDRs - Swing Trade",
-    page_icon="📉",
+    page_title=f"Monitor BDR {VERSAO}",
+    page_icon="🦅",
     layout="wide"
 )
 
@@ -20,26 +22,39 @@ warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
-PERIODO = "6mo"
+PERIODO = "1y" # Aumentei para 1 ano para calcular a SMA200 com precisão
 TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
-# --- IMPORTAÇÃO DOS SEGREDOS (CORREÇÃO AQUI) ---
+# --- SEGREDOS (COM A CORREÇÃO DA BRAPI) ---
 try:
     BRAPI_API_TOKEN = st.secrets["BRAPI_API_TOKEN"]
+    WHATSAPP_PHONE = st.secrets["WHATSAPP_PHONE"]
+    WHATSAPP_APIKEY = st.secrets["WHATSAPP_APIKEY"]
 except:
-    st.error("ERRO: O Token da BRAPI não foi encontrado nos 'Secrets'. Configure-o no painel do Streamlit.")
+    st.error("ERRO: Configure as chaves (BRAPI, WHATSAPP) nos Secrets do Streamlit.")
     st.stop()
 
-# --- FUNÇÕES ---
+# --- FUNÇÕES AUXILIARES ---
+
+def obter_hora_brasil():
+    fuso = pytz.timezone('America/Sao_Paulo')
+    return datetime.now(fuso).strftime('%d/%m %H:%M')
+
+def enviar_whatsapp(msg):
+    try:
+        texto = urllib.parse.quote(msg)
+        phone = WHATSAPP_PHONE.replace("+", "").strip()
+        url = f"https://api.textmebot.com/send.php?recipient=+{phone}&apikey={WHATSAPP_APIKEY}&text={texto}"
+        requests.get(url, timeout=20)
+        return True
+    except: return False
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        # CORREÇÃO: Adicionado o token na URL
+        # CORREÇÃO CRÍTICA DO ERRO "EXPECTING VALUE"
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
-        
-        # Garante que a requisição funcionou
         r.raise_for_status()
         
         dados = r.json().get('stocks', [])
@@ -48,7 +63,7 @@ def obter_dados_brapi():
         mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
         return lista_tickers, mapa_nomes
     except Exception as e:
-        st.error(f"Erro ao buscar BRAPI: {e}")
+        st.error(f"Erro BRAPI: {e}")
         return [], {}
 
 @st.cache_data(ttl=1800)
@@ -56,13 +71,13 @@ def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
     try:
-        # Mantendo o método que você gosta (rápido)
-        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
+        # ignore_tz=True ajuda a evitar erros de fuso horário do Yahoo
+        df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60, ignore_tz=True)
         if df.empty: return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
         return df.dropna(axis=1, how='all')
-    except Exception: return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def calcular_indicadores(df):
     df_calc = df.copy()
@@ -72,7 +87,7 @@ def calcular_indicadores(df):
     total = len(tickers)
     
     for i, ticker in enumerate(tickers):
-        progresso.progress((i + 1) / total)
+        if i % 10 == 0: progresso.progress((i + 1) / total)
         try:
             close = df_calc[('Close', ticker)]
             high = df_calc[('High', ticker)]
@@ -85,89 +100,25 @@ def calcular_indicadores(df):
             rs = ganho / perda
             df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
 
-            # ESTOCÁSTICO 14 (%K)
-            lowest_low = low.rolling(window=14).min()
-            highest_high = high.rolling(window=14).max()
-            stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
-            df_calc[('Stoch_K', ticker)] = stoch_k
+            # Estocástico
+            lowest_low = low.rolling(14).min()
+            highest_high = high.rolling(14).max()
+            df_calc[('Stoch_K', ticker)] = 100 * ((close - lowest_low) / (highest_high - lowest_low))
 
-            # Médias e Bollinger
-            df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
-            sma = close.rolling(20).mean()
+            # Médias (Setup do Gráfico Preferido)
+            df_calc[('SMA200', ticker)] = close.rolling(200).mean() # Tendência Longa
+            df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()  # Tendência Curta
+            
+            # Bollinger
+            sma20 = close.rolling(20).mean()
             std = close.rolling(20).std()
-            df_calc[('BB_Lower', ticker)] = sma - (std * 2)
-            df_calc[('BB_Upper', ticker)] = sma + (std * 2)
+            df_calc[('BB_Lower', ticker)] = sma20 - (std * 2)
+            df_calc[('BB_Upper', ticker)] = sma20 + (std * 2)
 
-            # MACD
-            ema_12 = close.ewm(span=12).mean()
-            ema_26 = close.ewm(span=26).mean()
-            macd = ema_12 - ema_26
-            signal = macd.ewm(span=9).mean()
-            df_calc[('MACD_Hist', ticker)] = macd - signal
         except: continue
             
     progresso.empty()
     return df_calc
-
-def calcular_fibonacci(df_ticker):
-    try:
-        if len(df_ticker) < 50: return None
-        high = df_ticker['High'].max()
-        low = df_ticker['Low'].min()
-        diff = high - low
-        return {'61.8%': low + (diff * 0.618)} 
-    except: return None
-
-def gerar_sinal(row_ticker, df_ticker):
-    sinais = []
-    score = 0
-    
-    def classificar(s):
-        if s >= 4: return "Muito Alta"
-        if s >= 2: return "Alta"
-        if s >= 1: return "Média"
-        return "Baixa"
-
-    try:
-        close = row_ticker.get('Close')
-        rsi = row_ticker.get('RSI14')
-        stoch = row_ticker.get('Stoch_K')
-        macd_hist = row_ticker.get('MACD_Hist')
-        bb_lower = row_ticker.get('BB_Lower')
-        
-        # Sinais de Reversão
-        if pd.notna(rsi):
-            if rsi < 30:
-                sinais.append("RSI Oversold")
-                score += 3
-            elif rsi < 40:
-                score += 1
-        
-        if pd.notna(stoch):
-            if stoch < 20:
-                sinais.append("Stoch. Fundo")
-                score += 2
-            
-        if pd.notna(macd_hist) and macd_hist > 0:
-            sinais.append("MACD Virando")
-            score += 1
-            
-        if pd.notna(close) and pd.notna(bb_lower):
-            if close < bb_lower:
-                sinais.append("Abaixo BB")
-                score += 2
-            elif close < bb_lower * 1.02:
-                sinais.append("Suporte BB")
-                score += 1
-
-        fibo = calcular_fibonacci(df_ticker)
-        if fibo and (fibo['61.8%'] * 0.99 <= close <= fibo['61.8%'] * 1.01):
-            sinais.append("Fibo 61.8%")
-            score += 2
-
-        return sinais, score, classificar(score)
-    except:
-        return [], 0, "Indefinida"
 
 def analisar_oportunidades(df_calc, mapa_nomes):
     resultados = []
@@ -176,114 +127,148 @@ def analisar_oportunidades(df_calc, mapa_nomes):
     for ticker in tickers:
         try:
             df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
-            if len(df_ticker) < 50: continue
+            if len(df_ticker) < 200: continue # Precisa de 200 dias para a SMA200
 
             last = df_ticker.iloc[-1]
-            anterior = df_ticker.iloc[-2]
+            prev = df_ticker.iloc[-2]
             
             preco = last.get('Close')
-            preco_ant = anterior.get('Close')
-            preco_open = last.get('Open')
-            volume = last.get('Volume')
+            prev_close = prev.get('Close')
             
-            if pd.isna(preco) or pd.isna(preco_ant): continue
+            if pd.isna(preco) or pd.isna(prev_close): continue
 
-            # Variações
-            queda_dia = ((preco - preco_ant) / preco_ant) * 100
-            gap = ((preco_open - preco_ant) / preco_ant) * 100
+            # Variação do Dia
+            queda_dia = ((preco - prev_close) / prev_close) * 100
             
+            # Só queremos QUEDAS
             if queda_dia >= 0: continue 
 
-            sinais, score, classificacao = gerar_sinal(last, df_ticker)
+            # Variação 7 Dias (aprox 5 pregões)
+            var_7d = np.nan
+            if len(df_ticker) >= 6:
+                price_7d = df_ticker['Close'].iloc[-6]
+                var_7d = ((preco - price_7d) / price_7d) * 100
+
+            # --- SINAIS DO GRÁFICO PREFERIDO ---
+            sinais = []
             
-            # I.S.
+            # 1. Tendência de Alta (Preço > SMA200)
+            sma200 = last.get('SMA200')
+            tendencia_alta = False
+            if pd.notna(sma200) and preco > sma200:
+                tendencia_alta = True
+                sinais.append("Trend Alta")
+            
+            # 2. RSI e Stoch
             rsi = last.get('RSI14', 50)
             stoch = last.get('Stoch_K', 50)
+            if rsi < 30: sinais.append("RSI Baixo")
+            if stoch < 20: sinais.append("Stoch Fundo")
+            
+            # 3. Bollinger
+            bb_low = last.get('BB_Lower')
+            if pd.notna(bb_low) and preco < bb_low * 1.02:
+                sinais.append("Suporte BB")
+
+            # Índice de Sobrevenda (Quanto maior, melhor)
             is_index = ((100 - rsi) + (100 - stoch)) / 2
             
+            # Definição do Setup
+            setup = "⚠️ Repique"
+            if tendencia_alta:
+                setup = "⭐ Ouro (Trend Alta)"
+
             # Tratamento de Nome
-            nome_completo = mapa_nomes.get(ticker, ticker)
-            palavras = nome_completo.split()
-            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS']
-            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
-            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
-            nome_curto = nome_curto.replace(',', '').title()
+            nome = mapa_nomes.get(ticker, ticker).split()[0].replace(',', '').title()
 
             resultados.append({
                 'Ticker': ticker,
-                'Empresa': nome_curto,
+                'Empresa': nome,
                 'Preco': preco,
-                'Volume': volume,
                 'Queda_Dia': queda_dia,
-                'Gap': gap,
+                'Var_7d': var_7d,
+                'Volume': last.get('Volume', 0),
                 'IS': is_index,
-                'RSI14': rsi,
-                'Stoch': stoch,
-                'Potencial': classificacao,
-                'Score': score,
-                'Sinais': ", ".join(sinais) if sinais else "-"
+                'Setup': setup,
+                'Sinais': ", ".join(sinais),
+                'Trend': tendencia_alta
             })
         except: continue
     return resultados
 
-def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
+def plotar_grafico(df_ticker, ticker, empresa, setup):
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
     
     close = df_ticker['Close']
+    sma200 = df_ticker['SMA200']
     
-    # Preço
+    # Gráfico Principal
     ax1 = axes[0]
-    ax1.plot(close.index, close.values, label='Close', color='#333333')
-    ax1.plot(close.index, df_ticker['EMA20'], label='EMA20', alpha=0.7, color='blue', linewidth=1)
-    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.15, color='gray')
-    ax1.set_title(f'{ticker} - {empresa} | I.S.: {is_val:.0f}', fontweight='bold')
+    ax1.plot(close.index, close.values, label='Preço', color='#333333')
+    
+    # NOSSO GRÁFICO PREFERIDO: Média de 200 em Dourado
+    if not sma200.isnull().all():
+        ax1.plot(close.index, sma200, label='SMA 200 (Tendência)', color='gold', linewidth=2)
+        
+    ax1.plot(close.index, df_ticker['EMA20'], label='EMA 20', color='blue', alpha=0.6, linewidth=1)
+    ax1.fill_between(close.index, df_ticker['BB_Lower'], df_ticker['BB_Upper'], alpha=0.1, color='gray')
+    
+    status_icon = "⭐" if "Ouro" in setup else "⚠️"
+    ax1.set_title(f'{status_icon} {ticker} - {empresa} | {setup}', fontweight='bold')
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
 
     # RSI
     ax2 = axes[1]
     ax2.plot(close.index, df_ticker['RSI14'], color='orange', label='RSI')
-    ax2.axhline(30, color='red', linestyle='--', linewidth=1)
-    ax2.axhline(70, color='green', linestyle='--', linewidth=1)
-    ax2.fill_between(close.index, 0, 30, alpha=0.2, color='red')
+    ax2.axhline(30, color='red', linestyle='--')
+    ax2.axhline(70, color='green', linestyle='--')
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
-    ax2.grid(True, alpha=0.3)
     
     # Estocástico
     ax3 = axes[2]
-    if 'Stoch_K' in df_ticker.columns:
-        ax3.plot(close.index, df_ticker['Stoch_K'], color='purple', label='Stoch %K')
-        ax3.axhline(20, color='red', linestyle='--', linewidth=1)
-        ax3.axhline(80, color='green', linestyle='--', linewidth=1)
-        ax3.fill_between(close.index, 0, 20, alpha=0.2, color='red')
+    ax3.plot(close.index, df_ticker['Stoch_K'], color='purple', label='Stoch')
+    ax3.axhline(20, color='red', linestyle='--')
+    ax3.axhline(80, color='green', linestyle='--')
     ax3.set_ylabel('Stoch')
     ax3.set_ylim(0, 100)
-    ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
     return fig
 
-# Estilização
-def estilizar_is(val):
-    if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold'
-    elif val >= 60: return 'background-color: #ffa726; color: black'
-    else: return 'color: #888888'
+# --- FUNÇÕES DE ESTILO ---
+def estilizar_setup(val):
+    if "Ouro" in val: return 'background-color: #1b5e20; color: white; font-weight: bold'
+    return 'color: #555'
 
-def estilizar_potencial(val):
-    if val == 'Muito Alta': return 'background-color: #2e7d32; color: white; font-weight: bold' 
-    elif val == 'Alta': return 'background-color: #66bb6a; color: black; font-weight: bold'
-    elif val == 'Média': return 'background-color: #ffa726; color: black'
-    elif val == 'Baixa': return 'background-color: #e0e0e0; color: black' 
-    return ''
+def estilizar_is(val):
+    if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold' # Vermelho forte
+    elif val >= 60: return 'background-color: #ffa726; color: black' # Laranja
+    return 'color: #888'
 
 # --- LAYOUT DO APP ---
 
-st.title("📉 Monitor BDR - Swing Trade")
-st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
+c1, c2 = st.columns([3, 1])
+c1.title(f"🦅 Monitor BDR - {VERSAO}")
+c2.markdown(f"**🕒 {obter_hora_brasil()} (Brasília)**")
 
-if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."):
+# LEGENDAS (Expander)
+with st.expander("ℹ️ LEGENDA DOS SINAIS (Clique para abrir)"):
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        st.markdown("""
+        * **⭐ Ouro (Trend Alta):** O preço caiu hoje, mas ainda está ACIMA da Média de 200 (Tendência Primária de Alta). Melhor cenário para compra.
+        * **⚠️ Repique:** O preço caiu e está ABAIXO da Média de 200. É uma operação mais arriscada (contra a tendência).
+        """)
+    with col_l2:
+        st.markdown("""
+        * **I.S. (Índice de Sobrevenda):** De 0 a 100. Quanto maior (vermelho), mais "barato" o ativo está estatisticamente.
+        * **Var 7D:** Quanto o ativo subiu ou caiu nos últimos 7 dias.
+        """)
+
+if st.button("🔄 Rastrear Oportunidades", type="primary"):
+    with st.spinner("Conectando à BRAPI e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
         
@@ -293,66 +278,61 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
+            # Ordenar: Primeiro os setups "Ouro", depois pelo I.S. (mais descontados)
+            df_res = df_res.sort_values(by=['Trend', 'IS'], ascending=[False, False])
             
-            # ORDENAÇÃO: Queda do Dia
-            df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
+            qtd_ouro = df_res[df_res['Trend'] == True].shape[0]
+            st.success(f"{len(oportunidades)} quedas encontradas! ({qtd_ouro} em Tendência de Alta ⭐)")
             
-            st.success(f"{len(oportunidades)} oportunidades encontradas!")
-            
-            # --- TABELA INTERATIVA ---
+            # --- TABELA ---
             st.dataframe(
-                df_res.style.map(estilizar_potencial, subset=['Potencial'])
+                df_res.style.map(estilizar_setup, subset=['Setup'])
                             .map(estilizar_is, subset=['IS'])
                 .format({
                     'Preco': 'R$ {:.2f}',
-                    'Volume': '{:,.0f}',
                     'Queda_Dia': '{:.2f}%',
-                    'Gap': '{:.2f}%',
+                    'Var_7d': '{:.2f}%',
                     'IS': '{:.0f}',
-                    'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'
+                    'Volume': '{:,.0f}' # Volume Inteiro com separador
                 }),
-                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
+                column_order=("Ticker", "Empresa", "Setup", "Preco", "Queda_Dia", "Var_7d", "IS", "Volume", "Sinais"),
                 column_config={
-                    "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
-                    "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda"),
-                    "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
-                    "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
-                    "Potencial": st.column_config.Column("Sinal"),
-                    "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large")
+                    "Setup": st.column_config.Column("Estratégia", width="medium"),
+                    "Var_7d": st.column_config.NumberColumn("7 Dias"),
+                    "Volume": st.column_config.NumberColumn("Vol.", format="%d"), # Inteiro
+                    "IS": st.column_config.NumberColumn("I.S.", help="0-100 (Quanto maior, mais barato)")
                 },
-                use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                use_container_width=True
             )
             
-            # --- TOP 5 ---
+            # --- WHATSAPP ---
+            if st.button("📱 Enviar Relatório WhatsApp"):
+                top = df_res.head(10)
+                msg = f"🦅 *BDR ALERT {VERSAO}*\n📅 {obter_hora_brasil()}\n\n"
+                for _, r in top.iterrows():
+                    icon = "⭐" if r['Trend'] else "🔻"
+                    msg += f"{icon} *{r['Ticker']}* ({r['Queda_Dia']:.2f}%)\n"
+                    msg += f"   💰 R${r['Preco']:.2f} | 7D: {r['Var_7d']:.1f}%\n"
+                    msg += f"   📊 IS: {r['IS']:.0f} | {r['Sinais']}\n\n"
+                
+                if enviar_whatsapp(msg): st.success("Enviado com sucesso!")
+                else: st.error("Erro ao enviar.")
+
+            # --- GRÁFICOS ---
             st.divider()
-            st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
+            st.subheader("🎯 Top Oportunidades (Visual)")
             
             top5 = df_res.head(5)
-            
             for _, row in top5.iterrows():
-                ticker = row['Ticker']
                 try:
-                    df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
-                    
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'], row['IS'])
-                        st.pyplot(fig)
-                    with col2:
-                        potencial = row['Potencial']
-                        cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
-                        
-                        st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
-                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
-                        st.write(f"**Score:** {row['Score']}/10")
-                        st.info(f"📋 **Sinais:** {row['Sinais']}")
-                        
+                    df_ticker = df_calc.xs(row['Ticker'], axis=1, level=1).dropna()
+                    fig = plotar_grafico(df_ticker, row['Ticker'], row['Empresa'], row['Setup'])
+                    st.pyplot(fig)
                     st.divider()
-                except Exception: continue
+                except: continue
+                
         else:
             st.warning("Nenhuma BDR em queda encontrada hoje.")
     else:
-        st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
+        st.error("Erro ao carregar dados.")
