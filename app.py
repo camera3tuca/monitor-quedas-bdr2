@@ -23,13 +23,25 @@ sns.set_palette("husl")
 PERIODO = "6mo"
 TERMINACOES_BDR = ('31', '32', '33', '34', '35', '39')
 
+# --- IMPORTAÇÃO DOS SEGREDOS (CORREÇÃO AQUI) ---
+try:
+    BRAPI_API_TOKEN = st.secrets["BRAPI_API_TOKEN"]
+except:
+    st.error("ERRO: O Token da BRAPI não foi encontrado nos 'Secrets'. Configure-o no painel do Streamlit.")
+    st.stop()
+
 # --- FUNÇÕES ---
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        url = "https://brapi.dev/api/quote/list"
+        # CORREÇÃO: Adicionado o token na URL
+        url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
+        
+        # Garante que a requisição funcionou
+        r.raise_for_status()
+        
         dados = r.json().get('stocks', [])
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
@@ -44,6 +56,7 @@ def buscar_dados(tickers):
     if not tickers: return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
     try:
+        # Mantendo o método que você gosta (rápido)
         df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
         if df.empty: return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -72,8 +85,7 @@ def calcular_indicadores(df):
             rs = ganho / perda
             df_calc[('RSI14', ticker)] = 100 - (100 / (1 + rs))
 
-            # ESTOCÁSTICO 14 (%K) - Novo!
-            # Fórmula: (Close - Lowest_Low) / (Highest_High - Lowest_Low) * 100
+            # ESTOCÁSTICO 14 (%K)
             lowest_low = low.rolling(window=14).min()
             highest_high = high.rolling(window=14).max()
             stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
@@ -119,7 +131,7 @@ def gerar_sinal(row_ticker, df_ticker):
     try:
         close = row_ticker.get('Close')
         rsi = row_ticker.get('RSI14')
-        stoch = row_ticker.get('Stoch_K') # Novo
+        stoch = row_ticker.get('Stoch_K')
         macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
         
@@ -180,24 +192,13 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             gap = ((preco_open - preco_ant) / preco_ant) * 100
             
-            var_7d = np.nan
-            if len(df_ticker) > 6:
-                preco_7d = df_ticker['Close'].iloc[-6]
-                var_7d = ((preco - preco_7d) / preco_7d) * 100
-
             if queda_dia >= 0: continue 
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
             
-            # --- CÁLCULO ÍNDICE DE SOBREVENDA (I.S.) ---
-            # Quanto maior, mais sobrevendido (melhor para reversão)
-            # Baseado em RSI invertido e Estocástico invertido
+            # I.S.
             rsi = last.get('RSI14', 50)
             stoch = last.get('Stoch_K', 50)
-            
-            # Normaliza para 0-100 onde 100 é o fundo do poço
-            # Se RSI = 30 -> (100-30) = 70 pontos
-            # Se Stoch = 10 -> (100-10) = 90 pontos
             is_index = ((100 - rsi) + (100 - stoch)) / 2
             
             # Tratamento de Nome
@@ -215,7 +216,7 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Volume': volume,
                 'Queda_Dia': queda_dia,
                 'Gap': gap,
-                'IS': is_index, # Novo Índice
+                'IS': is_index,
                 'RSI14': rsi,
                 'Stoch': stoch,
                 'Potencial': classificacao,
@@ -263,28 +264,18 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     plt.tight_layout()
     return fig
 
-# Função para colorir o IS (Índice de Sobrevenda)
+# Estilização
 def estilizar_is(val):
-    color = ''
-    if val >= 75: # Extrema sobrevenda
-        color = 'background-color: #d32f2f; color: white; font-weight: bold' # Vermelho (alerta oportunidade)
-    elif val >= 60:
-        color = 'background-color: #ffa726; color: black' # Laranja
-    else:
-        color = 'color: #888888' # Cinza apagado
-    return color
+    if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold'
+    elif val >= 60: return 'background-color: #ffa726; color: black'
+    else: return 'color: #888888'
 
 def estilizar_potencial(val):
-    color = ''
-    if val == 'Muito Alta':
-        color = 'background-color: #2e7d32; color: white; font-weight: bold' 
-    elif val == 'Alta':
-        color = 'background-color: #66bb6a; color: black; font-weight: bold'
-    elif val == 'Média':
-        color = 'background-color: #ffa726; color: black'
-    elif val == 'Baixa':
-        color = 'background-color: #e0e0e0; color: black' 
-    return color
+    if val == 'Muito Alta': return 'background-color: #2e7d32; color: white; font-weight: bold' 
+    elif val == 'Alta': return 'background-color: #66bb6a; color: black; font-weight: bold'
+    elif val == 'Média': return 'background-color: #ffa726; color: black'
+    elif val == 'Baixa': return 'background-color: #e0e0e0; color: black' 
+    return ''
 
 # --- LAYOUT DO APP ---
 
@@ -324,10 +315,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
                     "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
-                    "IS": st.column_config.NumberColumn(
-                        "I.S.", 
-                        help="Índice de Sobrevenda (0-100). Quanto maior, mais 'esticado' para baixo (bom para reversão). Baseado em RSI + Estocástico."
-                    ),
+                    "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda"),
                     "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
                     "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
                     "Potencial": st.column_config.Column("Sinal"),
@@ -337,7 +325,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 hide_index=True
             )
             
-            # --- TOP 5 (MAIORES QUEDAS) ---
+            # --- TOP 5 ---
             st.divider()
             st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
             
@@ -349,22 +337,16 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
                     
                     col1, col2 = st.columns([3, 1])
-                    
                     with col1:
                         fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'], row['IS'])
                         st.pyplot(fig)
-                        
                     with col2:
                         potencial = row['Potencial']
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
                         
                         st.markdown(f"### {cor_bola} {potencial}")
                         st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
-                        
-                        # Destaque do Índice de Sobrevenda
-                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100", 
-                                  delta="Esticado" if row['IS'] > 70 else None)
-                        
+                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
                         
@@ -373,4 +355,4 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         else:
             st.warning("Nenhuma BDR em queda encontrada hoje.")
     else:
-        st.error("Erro ao carregar dados.")
+        st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
