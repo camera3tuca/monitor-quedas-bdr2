@@ -278,7 +278,6 @@ def estilizar_potencial(val):
     return ''
 
 # --- LAYOUT DO APP ---
-
 st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
@@ -293,6 +292,18 @@ if st.button("🔄 Atualizar Análise", type="primary"):
         
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
+            df_res = df_res[[
+                "Ticker",
+                "Empresa",
+                "Preco",
+                "Queda_Dia",
+                "IS",
+                "Volume",
+                "Gap",
+                "Potencial",
+                "Score",
+                "Sinais"
+            ]]
             
             # ORDENAÇÃO: Queda do Dia
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
@@ -310,10 +321,11 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'
+                    'Stoch': '{:.0f}"
                 }),
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
+                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                     "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
                     "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda"),
                     "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
@@ -345,7 +357,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
                         
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
