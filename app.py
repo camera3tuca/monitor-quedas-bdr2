@@ -327,7 +327,6 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     plt.tight_layout()
     return fig
 
-
 # Estilização
 
 def estilizar_is(val):
@@ -337,7 +336,6 @@ def estilizar_is(val):
         return 'background-color: #ffa726; color: black'
     else:
         return 'color: #888888'
-
 
 def estilizar_potencial(val):
     if val == 'Muito Alta':
@@ -349,7 +347,6 @@ def estilizar_potencial(val):
     elif val == 'Baixa':
         return 'background-color: #e0e0e0; color: black'
     return ''
-
 
 # --- LAYOUT DO APP ---
 st.title("📉 Monitor BDR - Swing Trade")
@@ -383,8 +380,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'
-                }),
+                    'Stoch': '{:.0f}'}),
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
                     "Ticker": st.column_config.TextColumn("Ticker", width="small"),
