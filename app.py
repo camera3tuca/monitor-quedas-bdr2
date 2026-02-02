@@ -31,6 +31,7 @@ except:
     st.stop()
 
 # --- FUNÇÕES ---
+
 def buscar_nomes_brapi(tickers):
     nomes = {}
     if not tickers:
@@ -97,16 +98,20 @@ def obter_dados_brapi():
 
 @st.cache_data(ttl=1800)
 def buscar_dados(tickers):
-    if not tickers: return pd.DataFrame()
+    if not tickers:
+        return pd.DataFrame()
     sa_tickers = [f"{t}.SA" for t in tickers]
     try:
         # Mantendo o método que você gosta (rápido)
         df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
-        if df.empty: return pd.DataFrame()
+        if df.empty:
+            return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
         return df.dropna(axis=1, how='all')
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
 
 def calcular_indicadores(df):
     df_calc = df.copy()
@@ -148,28 +153,36 @@ def calcular_indicadores(df):
             macd = ema_12 - ema_26
             signal = macd.ewm(span=9).mean()
             df_calc[('MACD_Hist', ticker)] = macd - signal
-        except: continue
+        except Exception:
+            continue
 
     progresso.empty()
     return df_calc
 
+
 def calcular_fibonacci(df_ticker):
     try:
-        if len(df_ticker) < 50: return None
+        if len(df_ticker) < 50:
+            return None
         high = df_ticker['High'].max()
         low = df_ticker['Low'].min()
         diff = high - low
         return {'61.8%': low + (diff * 0.618)}
-    except: return None
+    except Exception:
+        return None
+
 
 def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
 
     def classificar(s):
-        if s >= 4: return "Muito Alta"
-        if s >= 2: return "Alta"
-        if s >= 1: return "Média"
+        if s >= 4:
+            return "Muito Alta"
+        if s >= 2:
+            return "Alta"
+        if s >= 1:
+            return "Média"
         return "Baixa"
 
     try:
@@ -210,8 +223,9 @@ def gerar_sinal(row_ticker, df_ticker):
             score += 2
 
         return sinais, score, classificar(score)
-    except:
+    except Exception:
         return [], 0, "Indefinida"
+
 
 def analisar_oportunidades(df_calc, mapa_nomes):
     resultados = []
@@ -220,7 +234,8 @@ def analisar_oportunidades(df_calc, mapa_nomes):
     for ticker in tickers:
         try:
             df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
-            if len(df_ticker) < 50: continue
+            if len(df_ticker) < 50:
+                continue
 
             last = df_ticker.iloc[-1]
             anterior = df_ticker.iloc[-2]
@@ -230,13 +245,15 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             preco_open = last.get('Open')
             volume = last.get('Volume')
 
-            if pd.isna(preco) or pd.isna(preco_ant): continue
+            if pd.isna(preco) or pd.isna(preco_ant):
+                continue
 
             # Variações
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             gap = ((preco_open - preco_ant) / preco_ant) * 100
 
-            if queda_dia >= 0: continue
+            if queda_dia >= 0:
+                continue
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
 
@@ -267,8 +284,10 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Score': score,
                 'Sinais': ", ".join(sinais) if sinais else "-"
             })
-        except: continue
+        except Exception:
+            continue
     return resultados
+
 
 def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
@@ -308,25 +327,36 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     plt.tight_layout()
     return fig
 
+
 # Estilização
+
 def estilizar_is(val):
-    if val >= 75: return 'background-color: #d32f2f; color: white; font-weight: bold'
-    elif val >= 60: return 'background-color: #ffa726; color: black'
-    else: return 'color: #888888'
+    if val >= 75:
+        return 'background-color: #d32f2f; color: white; font-weight: bold'
+    elif val >= 60:
+        return 'background-color: #ffa726; color: black'
+    else:
+        return 'color: #888888'
+
 
 def estilizar_potencial(val):
-    if val == 'Muito Alta': return 'background-color: #2e7d32; color: white; font-weight: bold'
-    elif val == 'Alta': return 'background-color: #66bb6a; color: black; font-weight: bold'
-    elif val == 'Média': return 'background-color: #ffa726; color: black'
-    elif val == 'Baixa': return 'background-color: #e0e0e0; color: black'
+    if val == 'Muito Alta':
+        return 'background-color: #2e7d32; color: white; font-weight: bold'
+    elif val == 'Alta':
+        return 'background-color: #66bb6a; color: black; font-weight: bold'
+    elif val == 'Média':
+        return 'background-color: #ffa726; color: black'
+    elif val == 'Baixa':
+        return 'background-color: #e0e0e0; color: black'
     return ''
+
 
 # --- LAYOUT DO APP ---
 st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."): 
+    with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
 
@@ -353,7 +383,8 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'}),
+                    'Stoch': '{:.0f}'
+                }),
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
                     "Ticker": st.column_config.TextColumn("Ticker", width="small"),
@@ -388,13 +419,14 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
 
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse"")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
 
                     st.divider()
-                except Exception: continue
+                except Exception:
+                    continue
         else:
             st.warning("Nenhuma BDR em queda encontrada hoje.")
     else:
