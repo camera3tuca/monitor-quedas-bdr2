@@ -326,7 +326,7 @@ st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."):
+    with st.spinner("Conectando à API e baixando dados..."): 
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
 
@@ -343,7 +343,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             st.success(f"{len(oportunidades)} oportunidades encontradas!")
 
             # --- TABELA INTERATIVA ---
-st.dataframe(
+            st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
                             .map(estilizar_is, subset=['IS'])
                 .format({
@@ -388,7 +388,7 @@ st.dataframe(
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
 
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse"")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
