@@ -38,14 +38,24 @@ def obter_dados_brapi():
         # CORREÇÃO: Adicionado o token na URL
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
-        
+
         # Garante que a requisição funcionou
         r.raise_for_status()
-        
+
         dados = r.json().get('stocks', [])
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
-        mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
+
+        def extrair_nome(dado):
+            return (
+                dado.get('name')
+                or dado.get('companyName')
+                or dado.get('shortName')
+                or dado.get('longName')
+                or dado.get('stock')
+            )
+
+        mapa_nomes = {d['stock']: extrair_nome(d) for d in bdrs_raw}
         return lista_tickers, mapa_nomes
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
@@ -67,17 +77,17 @@ def buscar_dados(tickers):
 def calcular_indicadores(df):
     df_calc = df.copy()
     tickers = df_calc.columns.get_level_values(1).unique()
-    
+
     progresso = st.progress(0)
     total = len(tickers)
-    
+
     for i, ticker in enumerate(tickers):
         progresso.progress((i + 1) / total)
         try:
             close = df_calc[('Close', ticker)]
             high = df_calc[('High', ticker)]
             low = df_calc[('Low', ticker)]
-            
+
             # RSI 14
             delta = close.diff()
             ganho = delta.clip(lower=0).rolling(14).mean()
@@ -105,7 +115,7 @@ def calcular_indicadores(df):
             signal = macd.ewm(span=9).mean()
             df_calc[('MACD_Hist', ticker)] = macd - signal
         except: continue
-            
+
     progresso.empty()
     return df_calc
 
@@ -115,13 +125,13 @@ def calcular_fibonacci(df_ticker):
         high = df_ticker['High'].max()
         low = df_ticker['Low'].min()
         diff = high - low
-        return {'61.8%': low + (diff * 0.618)} 
+        return {'61.8%': low + (diff * 0.618)}
     except: return None
 
 def gerar_sinal(row_ticker, df_ticker):
     sinais = []
     score = 0
-    
+
     def classificar(s):
         if s >= 4: return "Muito Alta"
         if s >= 2: return "Alta"
@@ -134,7 +144,7 @@ def gerar_sinal(row_ticker, df_ticker):
         stoch = row_ticker.get('Stoch_K')
         macd_hist = row_ticker.get('MACD_Hist')
         bb_lower = row_ticker.get('BB_Lower')
-        
+
         # Sinais de Reversão
         if pd.notna(rsi):
             if rsi < 30:
@@ -142,16 +152,16 @@ def gerar_sinal(row_ticker, df_ticker):
                 score += 3
             elif rsi < 40:
                 score += 1
-        
+
         if pd.notna(stoch):
             if stoch < 20:
                 sinais.append("Stoch. Fundo")
                 score += 2
-            
+
         if pd.notna(macd_hist) and macd_hist > 0:
             sinais.append("MACD Virando")
             score += 1
-            
+
         if pd.notna(close) and pd.notna(bb_lower):
             if close < bb_lower:
                 sinais.append("Abaixo BB")
@@ -180,27 +190,27 @@ def analisar_oportunidades(df_calc, mapa_nomes):
 
             last = df_ticker.iloc[-1]
             anterior = df_ticker.iloc[-2]
-            
+
             preco = last.get('Close')
             preco_ant = anterior.get('Close')
             preco_open = last.get('Open')
             volume = last.get('Volume')
-            
+
             if pd.isna(preco) or pd.isna(preco_ant): continue
 
             # Variações
             queda_dia = ((preco - preco_ant) / preco_ant) * 100
             gap = ((preco_open - preco_ant) / preco_ant) * 100
-            
-            if queda_dia >= 0: continue 
+
+            if queda_dia >= 0: continue
 
             sinais, score, classificacao = gerar_sinal(last, df_ticker)
-            
+
             # I.S.
             rsi = last.get('RSI14', 50)
             stoch = last.get('Stoch_K', 50)
             is_index = ((100 - rsi) + (100 - stoch)) / 2
-            
+
             # Tratamento de Nome
             nome_completo = mapa_nomes.get(ticker, ticker)
             palavras = nome_completo.split()
@@ -228,9 +238,9 @@ def analisar_oportunidades(df_calc, mapa_nomes):
 
 def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
-    
+
     close = df_ticker['Close']
-    
+
     # Preço
     ax1 = axes[0]
     ax1.plot(close.index, close.values, label='Close', color='#333333')
@@ -249,7 +259,7 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
     ax2.grid(True, alpha=0.3)
-    
+
     # Estocástico
     ax3 = axes[2]
     if 'Stoch_K' in df_ticker.columns:
@@ -260,7 +270,7 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     ax3.set_ylabel('Stoch')
     ax3.set_ylim(0, 100)
     ax3.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
     return fig
 
@@ -271,10 +281,10 @@ def estilizar_is(val):
     else: return 'color: #888888'
 
 def estilizar_potencial(val):
-    if val == 'Muito Alta': return 'background-color: #2e7d32; color: white; font-weight: bold' 
+    if val == 'Muito Alta': return 'background-color: #2e7d32; color: white; font-weight: bold'
     elif val == 'Alta': return 'background-color: #66bb6a; color: black; font-weight: bold'
     elif val == 'Média': return 'background-color: #ffa726; color: black'
-    elif val == 'Baixa': return 'background-color: #e0e0e0; color: black' 
+    elif val == 'Baixa': return 'background-color: #e0e0e0; color: black'
     return ''
 
 # --- LAYOUT DO APP ---
@@ -285,31 +295,19 @@ if st.button("🔄 Atualizar Análise", type="primary"):
     with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
-        
+
     if not df.empty:
         df_calc = calcular_indicadores(df)
         oportunidades = analisar_oportunidades(df_calc, mapa_nomes)
-        
+
         if oportunidades:
             df_res = pd.DataFrame(oportunidades)
-            df_res = df_res[[
-                "Ticker",
-                "Empresa",
-                "Preco",
-                "Queda_Dia",
-                "IS",
-                "Volume",
-                "Gap",
-                "Potencial",
-                "Score",
-                "Sinais"
-            ]]
-            
+
             # ORDENAÇÃO: Queda do Dia
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
-            
+
             st.success(f"{len(oportunidades)} oportunidades encontradas!")
-            
+
             # --- TABELA INTERATIVA ---
             st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
@@ -335,18 +333,18 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 use_container_width=True,
                 hide_index=True
             )
-            
+
             # --- TOP 5 ---
             st.divider()
             st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
-            
+
             top5 = df_res.head(5)
-            
+
             for _, row in top5.iterrows():
                 ticker = row['Ticker']
                 try:
                     df_ticker = df_calc.xs(ticker, axis=1, level=1).dropna()
-                    
+
                     col1, col2 = st.columns([3, 1])
                     with col1:
                         fig = plotar_grafico(df_ticker, ticker, row['Empresa'], row['RSI14'], row['IS'])
@@ -354,13 +352,13 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     with col2:
                         potencial = row['Potencial']
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
-                        
+
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color=\"inverse\"")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
-                        
+
                     st.divider()
                 except Exception: continue
         else:
