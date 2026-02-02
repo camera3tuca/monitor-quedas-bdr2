@@ -31,6 +31,33 @@ except:
     st.stop()
 
 # --- FUNÇÕES ---
+def buscar_nomes_brapi(tickers):
+    nomes = {}
+    if not tickers:
+        return nomes
+
+    for i in range(0, len(tickers), 50):
+        grupo = tickers[i:i + 50]
+        try:
+            url = f"https://brapi.dev/api/quote/{','.join(grupo)}?token={BRAPI_API_TOKEN}"
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            resultados = r.json().get('results', [])
+            for item in resultados:
+                ticker = item.get('symbol') or item.get('stock')
+                nome = (
+                    item.get('longName')
+                    or item.get('shortName')
+                    or item.get('name')
+                    or item.get('companyName')
+                )
+                if ticker and nome:
+                    nomes[ticker] = nome
+        except Exception:
+            continue
+
+    return nomes
+
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
@@ -56,6 +83,13 @@ def obter_dados_brapi():
             )
 
         mapa_nomes = {d['stock']: extrair_nome(d) for d in bdrs_raw}
+        tickers_sem_nome = [
+            t for t in lista_tickers
+            if mapa_nomes.get(t) in (None, "", t)
+        ]
+        if tickers_sem_nome:
+            mapa_nomes.update(buscar_nomes_brapi(tickers_sem_nome))
+
         return lista_tickers, mapa_nomes
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
@@ -309,7 +343,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             st.success(f"{len(oportunidades)} oportunidades encontradas!")
 
             # --- TABELA INTERATIVA ---
-            st.dataframe(
+st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
                             .map(estilizar_is, subset=['IS'])
                 .format({
