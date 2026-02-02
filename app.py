@@ -321,7 +321,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}"
+                    'Stoch': '{:.0f}'
                 }),
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
