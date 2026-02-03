@@ -142,6 +142,8 @@ def calcular_indicadores(df):
 
             # Médias e Bollinger
             df_calc[('EMA20', ticker)] = close.ewm(span=20).mean()
+            df_calc[('EMA50', ticker)] = close.ewm(span=50).mean()
+            df_calc[('EMA200', ticker)] = close.ewm(span=200).mean()
             sma = close.rolling(20).mean()
             std = close.rolling(20).std()
             df_calc[('BB_Lower', ticker)] = sma - (std * 2)
@@ -170,6 +172,33 @@ def calcular_fibonacci(df_ticker):
         return {'61.8%': low + (diff * 0.618)}
     except Exception:
         return None
+
+
+def calcular_tendencia_alta(df_ticker):
+    try:
+        ema20 = df_ticker.get('EMA20', pd.Series(dtype=float)).dropna()
+        ema50 = df_ticker.get('EMA50', pd.Series(dtype=float)).dropna()
+        ema200 = df_ticker.get('EMA200', pd.Series(dtype=float)).dropna()
+        if ema20.empty or ema50.empty or ema200.empty:
+            return 0, "Indefinida", False
+
+        ema20_up = ema20.iloc[-1] > ema20.iloc[0]
+        ema50_up = ema50.iloc[-1] > ema50.iloc[0]
+        ema200_up = ema200.iloc[-1] > ema200.iloc[0]
+        alinhadas = ema20.iloc[-1] > ema50.iloc[-1] > ema200.iloc[-1]
+
+        score = (sum([ema20_up, ema50_up, ema200_up, alinhadas]) * 2)
+
+        if score >= 6:
+            classificacao = "Forte"
+        elif score >= 4:
+            classificacao = "Moderada"
+        else:
+            classificacao = "Fraca"
+
+        return score, classificacao, score >= 6
+    except Exception:
+        return 0, "Indefinida", False
 
 
 def gerar_sinal(row_ticker, df_ticker):
@@ -262,6 +291,9 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             stoch = last.get('Stoch_K', 50)
             is_index = ((100 - rsi) + (100 - stoch)) / 2
 
+            # Tendência pelas médias
+            tendencia_score, tendencia_class, tendencia_forte = calcular_tendencia_alta(df_ticker)
+
             # Tratamento de Nome
             nome_completo = mapa_nomes.get(ticker, ticker)
             palavras = nome_completo.split()
@@ -282,7 +314,10 @@ def analisar_oportunidades(df_calc, mapa_nomes):
                 'Stoch': stoch,
                 'Potencial': classificacao,
                 'Score': score,
-                'Sinais': ", ".join(sinais) if sinais else "-"
+                'Sinais': ", ".join(sinais) if sinais else "-",
+                'TrendScore': tendencia_score,
+                'Tendencia': tendencia_class,
+                'Tendencia_Forte': tendencia_forte
             })
         except Exception:
             continue
@@ -353,7 +388,7 @@ st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."):
+    with st.spinner("Conectando à API e baixando dados..."): 
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
 
@@ -367,10 +402,39 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             # ORDENAÇÃO: Queda do Dia
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
 
+            if "filtro_tendencia" not in st.session_state:
+                st.session_state.filtro_tendencia = False
+
+            if st.button("🧭 Filtrar tendência de alta (EMAs)", type="secondary"):
+                st.session_state.filtro_tendencia = not st.session_state.filtro_tendencia
+
+            if st.session_state.filtro_tendencia:
+                df_res = df_res[df_res['Tendencia_Forte']]
+                df_res = df_res.sort_values(by='TrendScore', ascending=False)
+                st.info("Filtro ativo: EMAs 20/50/200 em alta nos últimos 6 meses.")
+
             st.success(f"{len(oportunidades)} oportunidades encontradas!")
 
+            column_order = ("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais")
+            column_config = {
+                "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
+                "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda"),
+                "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
+                "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
+                "Potencial": st.column_config.Column("Sinal"),
+                "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large")
+            }
+
+            if st.session_state.filtro_tendencia:
+                column_order = ("Ticker", "Empresa", "Tendencia", "TrendScore", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais")
+                column_config.update({
+                    "Tendencia": st.column_config.TextColumn("Tendência"),
+                    "TrendScore": st.column_config.ProgressColumn("Trend", format="%d", min_value=0, max_value=8)
+                })
+
             # --- TABELA INTERATIVA ---
-            st.dataframe(
+st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
                             .map(estilizar_is, subset=['IS'])
                 .format({
@@ -380,24 +444,18 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'}),
-                column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
-                column_config={
-                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                    "Empresa": st.column_config.TextColumn("Empresa", width="medium"),
-                    "IS": st.column_config.NumberColumn("I.S.", help="Índice de Sobrevenda"),
-                    "Volume": st.column_config.NumberColumn("Vol.", help="Volume Financeiro"),
-                    "Score": st.column_config.ProgressColumn("Força", format="%d", min_value=0, max_value=10),
-                    "Potencial": st.column_config.Column("Sinal"),
-                    "Sinais": st.column_config.TextColumn("Sinais Técnicos", width="large")
-                },
+                    'Stoch': '{:.0f}',
+                    'TrendScore': '{:.0f}'
+                }),
+                column_order=column_order,
+                column_config=column_config,
                 use_container_width=True,
                 hide_index=True
             )
 
             # --- TOP 5 ---
-            st.divider()
-            st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
+st.divider()
+st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
 
             top5 = df_res.head(5)
 
