@@ -39,7 +39,7 @@ def buscar_nomes_brapi(tickers):
     for i in range(0, len(tickers), 50):
         grupo = tickers[i:i + 50]
         try:
-            url = f"https://brapi.dev/api/quote/{','.join(grupo)}?token={BRAPI_API_TOKEN}"
+            url = f"https://brapi.dev/api/quote/{{','.join(grupo)}}?token={{BRAPI_API_TOKEN}}"
             r = requests.get(url, timeout=30)
             r.raise_for_status()
             resultados = r.json().get('results', [])
@@ -63,7 +63,7 @@ def buscar_nomes_brapi(tickers):
 def obter_dados_brapi():
     try:
         # CORREÇÃO: Adicionado o token na URL
-        url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
+        url = f"https://brapi.dev/api/quote/list?token={{BRAPI_API_TOKEN}}"
         r = requests.get(url, timeout=30)
 
         # Garante que a requisição funcionou
@@ -92,14 +92,14 @@ def obter_dados_brapi():
 
         return lista_tickers, mapa_nomes
     except Exception as e:
-        st.error(f"Erro ao buscar BRAPI: {e}")
+        st.error(f"Erro ao buscar BRAPI: {{e}}")
         return [], {}
 
 @st.cache_data(ttl=1800)
 def buscar_dados(tickers):
     if not tickers:
         return pd.DataFrame()
-    sa_tickers = [f"{t}.SA" for t in tickers]
+    sa_tickers = [f"{{t}}.SA" for t in tickers]
     try:
         # Mantendo o método que você gosta (rápido)
         df = yf.download(sa_tickers, period=PERIODO, auto_adjust=True, progress=False, timeout=60)
@@ -386,7 +386,7 @@ st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."):
+    with st.spinner("Conectando à API e baixando dados..."): 
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
 
@@ -470,11 +470,11 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         potencial = row['Potencial']
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
 
-                        st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse")
-                        st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
-                        st.write(f"**Score:** {row['Score']}/10")
-                        st.info(f"📋 **Sinais:** {row['Sinais']}")
+                        st.markdown(f"### {{cor_bola}} {{potencial}}")
+                        st.metric("Queda Hoje", f"{{row['Queda_Dia']:.2f}}%", delta_color="inverse")
+                        st.metric("I.S. (Sobrevenda)", f"{{row['IS']:.0f}}/100")
+                        st.write(f"**Score:** {{row['Score']}}/10")
+                        st.info(f"📋 **Sinais:** {{row['Sinais']}}")
 
                     st.divider()
                 except Exception:
