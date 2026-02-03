@@ -31,7 +31,6 @@ except:
     st.stop()
 
 # --- FUNÇÕES ---
-
 def buscar_nomes_brapi(tickers):
     nomes = {}
     if not tickers:
@@ -363,7 +362,6 @@ def plotar_grafico(df_ticker, ticker, empresa, rsi, is_val):
     return fig
 
 # Estilização
-
 def estilizar_is(val):
     if val >= 75:
         return 'background-color: #d32f2f; color: white; font-weight: bold'
@@ -388,7 +386,7 @@ st.title("📉 Monitor BDR - Swing Trade")
 st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).")
 
 if st.button("🔄 Atualizar Análise", type="primary"):
-    with st.spinner("Conectando à API e baixando dados..."): 
+    with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
         df = buscar_dados(lista_bdrs)
 
@@ -434,7 +432,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 })
 
             # --- TABELA INTERATIVA ---
-st.dataframe(
+            st.dataframe(
                 df_res.style.map(estilizar_potencial, subset=['Potencial'])
                             .map(estilizar_is, subset=['IS'])
                 .format({
@@ -454,8 +452,8 @@ st.dataframe(
             )
 
             # --- TOP 5 ---
-st.divider()
-st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
+            st.divider()
+            st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
 
             top5 = df_res.head(5)
 
@@ -473,7 +471,7 @@ st.subheader("🔍 Análise Gráfica - Top 5 Quedas")
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
 
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color=\"inverse\"")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
