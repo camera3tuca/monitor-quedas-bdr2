@@ -35,50 +35,40 @@ except:
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        # Obtendo lista de BDRs
+        # Obtendo lista completa de tickers da BRAPI
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         
-        # A API retorna diretamente uma lista ou um objeto com 'stocks'
         response_data = r.json()
         
-        # Verificar se é uma lista direta ou objeto com 'stocks'
-        if isinstance(response_data, list):
+        # A API BRAPI retorna: {"stocks": [{"stock": "AAPL34", "name": "Apple Inc", ...}, ...]}
+        if isinstance(response_data, dict) and 'stocks' in response_data:
+            dados = response_data['stocks']
+        elif isinstance(response_data, list):
             dados = response_data
         else:
-            dados = response_data.get('stocks', [])
+            st.error("Formato de resposta da BRAPI inesperado")
+            return [], {}
         
-        # Filtrar apenas BDRs
+        # Filtrar apenas BDRs e criar mapa de nomes
         bdrs_raw = [d for d in dados if d.get('stock', '').endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         
-        # Buscar nomes completos individualmente para garantir dados atualizados
+        # Criar mapa com os nomes disponíveis na lista
+        # A BRAPI retorna 'name', 'longName', ou 'shortName' dependendo do endpoint
         mapa_nomes = {}
-        for ticker in lista_tickers[:10]:  # Teste com primeiros 10 para não sobrecarregar
-            try:
-                url_quote = f"https://brapi.dev/api/quote/{ticker}?token={BRAPI_API_TOKEN}"
-                r_quote = requests.get(url_quote, timeout=10)
-                if r_quote.status_code == 200:
-                    quote_data = r_quote.json()
-                    # A API pode retornar 'results' como lista
-                    if 'results' in quote_data and len(quote_data['results']) > 0:
-                        nome = quote_data['results'][0].get('longName') or quote_data['results'][0].get('shortName') or ticker
-                    else:
-                        nome = quote_data.get('longName') or quote_data.get('shortName') or ticker
-                    mapa_nomes[ticker] = nome
-                else:
-                    mapa_nomes[ticker] = ticker
-            except:
-                mapa_nomes[ticker] = ticker
-        
-        # Para os demais, usar o nome da lista ou o ticker
         for d in bdrs_raw:
             ticker = d['stock']
-            if ticker not in mapa_nomes:
-                mapa_nomes[ticker] = d.get('name') or d.get('longName') or d.get('shortName') or ticker
+            # Tentar pegar o nome na ordem de preferência
+            nome = (d.get('longName') or 
+                   d.get('name') or 
+                   d.get('shortName') or 
+                   ticker)
+            mapa_nomes[ticker] = nome
         
         return lista_tickers, mapa_nomes
+        
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
         return [], {}
@@ -235,11 +225,23 @@ def analisar_oportunidades(df_calc, mapa_nomes):
             
             # Tratamento de Nome
             nome_completo = mapa_nomes.get(ticker, ticker)
-            palavras = nome_completo.split()
-            ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS']
-            palavras_uteis = [p for p in palavras if p.upper().replace('.', '') not in ignore_list]
-            nome_curto = " ".join(palavras_uteis[:2]) if len(palavras_uteis) > 0 else ticker
-            nome_curto = nome_curto.replace(',', '').title()
+            
+            # Se o nome completo for igual ao ticker, significa que não conseguimos o nome real
+            if nome_completo == ticker:
+                # Usar o ticker sem processar
+                nome_curto = ticker
+            else:
+                # Processar o nome normalmente
+                palavras = nome_completo.split()
+                ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS', 'CO', 'LLC']
+                palavras_uteis = [p for p in palavras if p.upper().replace('.', '').replace(',', '') not in ignore_list]
+                
+                if len(palavras_uteis) > 0:
+                    nome_curto = " ".join(palavras_uteis[:2])
+                else:
+                    nome_curto = nome_completo
+                    
+                nome_curto = nome_curto.replace(',', '').title()
 
             resultados.append({
                 'Ticker': ticker,
@@ -317,6 +319,11 @@ st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).
 if st.button("🔄 Atualizar Análise", type="primary"):
     with st.spinner("Conectando à API e baixando dados..."):
         lista_bdrs, mapa_nomes = obter_dados_brapi()
+        
+        # DEBUG: Mostrar alguns nomes obtidos
+        if mapa_nomes:
+            st.info(f"Debug - Primeiros 5 nomes: {dict(list(mapa_nomes.items())[:5])}")
+        
         df = buscar_dados(lista_bdrs)
         
     if not df.empty:
