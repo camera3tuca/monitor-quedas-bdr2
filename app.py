@@ -33,6 +33,42 @@ except:
 # --- FUNÇÕES ---
 
 @st.cache_data(ttl=3600)
+def buscar_nomes_brapi(tickers):
+    mapa_nomes = {}
+    if not tickers:
+        return mapa_nomes
+
+    chunk_size = 50
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i:i + chunk_size]
+        symbols = ",".join(chunk)
+
+        try:
+            url = f"https://brapi.dev/api/quote/{symbols}?token={BRAPI_API_TOKEN}"
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            resultados = r.json().get("results", [])
+
+            for item in resultados:
+                symbol = item.get("symbol") or item.get("stock")
+                if not symbol:
+                    continue
+                symbol = symbol.replace(".SA", "")
+                nome = (
+                    item.get("longName")
+                    or item.get("shortName")
+                    or item.get("companyName")
+                    or item.get("name")
+                    or symbol
+                )
+                mapa_nomes[symbol] = nome
+        except Exception:
+            continue
+
+    return mapa_nomes
+
+@st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
         # CORREÇÃO: Adicionado o token na URL
@@ -46,6 +82,7 @@ def obter_dados_brapi():
         bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
+        mapa_nomes.update(buscar_nomes_brapi(lista_tickers))
         return lista_tickers, mapa_nomes
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
@@ -310,7 +347,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                     'Gap': '{:.2f}%',
                     'IS': '{:.0f}',
                     'RSI14': '{:.0f}',
-                    'Stoch': '{:.0f}'
+                    'Stoch': '{:.0f}'>
                 }),
                 column_order=("Ticker", "Empresa", "Preco", "Queda_Dia", "IS", "Volume", "Gap", "Potencial", "Score", "Sinais"),
                 column_config={
@@ -345,7 +382,7 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                         cor_bola = "🟢" if "Alta" in potencial else "🟡" if "Média" in potencial else "⚪"
                         
                         st.markdown(f"### {cor_bola} {potencial}")
-                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%", delta_color="inverse")
+                        st.metric("Queda Hoje", f"{row['Queda_Dia']:.2f}%, delta_color="inverse")
                         st.metric("I.S. (Sobrevenda)", f"{row['IS']:.0f}/100")
                         st.write(f"**Score:** {row['Score']}/10")
                         st.info(f"📋 **Sinais:** {row['Sinais']}")
