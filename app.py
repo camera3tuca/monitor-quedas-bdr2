@@ -35,14 +35,13 @@ except:
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        # Obtendo lista completa de tickers da BRAPI
+        # Obtendo lista de tickers BDR da BRAPI
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         
         response_data = r.json()
         
-        # A API BRAPI retorna: {"stocks": [{"stock": "AAPL34", "name": "Apple Inc", ...}, ...]}
         if isinstance(response_data, dict) and 'stocks' in response_data:
             dados = response_data['stocks']
         elif isinstance(response_data, list):
@@ -51,23 +50,11 @@ def obter_dados_brapi():
             st.error("Formato de resposta da BRAPI inesperado")
             return [], {}
         
-        # Filtrar apenas BDRs e criar mapa de nomes
+        # Filtrar apenas BDRs
         bdrs_raw = [d for d in dados if d.get('stock', '').endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         
-        # Criar mapa com os nomes disponíveis na lista
-        # A BRAPI retorna 'name', 'longName', ou 'shortName' dependendo do endpoint
-        mapa_nomes = {}
-        for d in bdrs_raw:
-            ticker = d['stock']
-            # Tentar pegar o nome na ordem de preferência
-            nome = (d.get('longName') or 
-                   d.get('name') or 
-                   d.get('shortName') or 
-                   ticker)
-            mapa_nomes[ticker] = nome
-        
-        return lista_tickers, mapa_nomes
+        return lista_tickers, {}
         
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
@@ -85,6 +72,41 @@ def buscar_dados(tickers):
             df.columns = pd.MultiIndex.from_tuples([(c[0], c[1].replace(".SA", "")) for c in df.columns])
         return df.dropna(axis=1, how='all')
     except Exception: return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def obter_nomes_yfinance(tickers):
+    """Busca os nomes das empresas diretamente do Yahoo Finance"""
+    mapa_nomes = {}
+    
+    # Processar em lotes pequenos para não sobrecarregar
+    total = len(tickers)
+    
+    if total > 0:
+        progresso_nomes = st.progress(0, text="Buscando nomes das empresas...")
+        
+        for i, ticker in enumerate(tickers):
+            try:
+                # Atualizar progresso a cada 5 tickers
+                if i % 5 == 0:
+                    progresso_nomes.progress(min((i + 1) / total, 1.0), 
+                                            text=f"Buscando nomes... {i+1}/{total}")
+                
+                ticker_yf = yf.Ticker(f"{ticker}.SA")
+                info = ticker_yf.info
+                
+                # Tentar pegar o nome na ordem de preferência
+                nome = (info.get('longName') or 
+                       info.get('shortName') or 
+                       ticker)
+                
+                mapa_nomes[ticker] = nome
+            except:
+                # Se falhar, usar o ticker mesmo
+                mapa_nomes[ticker] = ticker
+        
+        progresso_nomes.empty()
+    
+    return mapa_nomes
 
 def calcular_indicadores(df):
     df_calc = df.copy()
@@ -318,13 +340,21 @@ st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).
 
 if st.button("🔄 Atualizar Análise", type="primary"):
     with st.spinner("Conectando à API e baixando dados..."):
-        lista_bdrs, mapa_nomes = obter_dados_brapi()
+        lista_bdrs, _ = obter_dados_brapi()
         
-        # DEBUG: Mostrar alguns nomes obtidos
-        if mapa_nomes:
-            st.info(f"Debug - Primeiros 5 nomes: {dict(list(mapa_nomes.items())[:5])}")
+        if not lista_bdrs:
+            st.error("Não foi possível obter lista de BDRs da BRAPI")
+            st.stop()
         
         df = buscar_dados(lista_bdrs)
+        
+        if df.empty:
+            st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
+            st.stop()
+        
+        # Buscar nomes do Yahoo Finance
+        tickers_com_dados = df.columns.get_level_values(1).unique().tolist()
+        mapa_nomes = obter_nomes_yfinance(tickers_com_dados)
         
     if not df.empty:
         df_calc = calcular_indicadores(df)
