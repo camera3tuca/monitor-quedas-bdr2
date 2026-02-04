@@ -34,8 +34,8 @@ except:
 
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
+    """Busca apenas a lista de tickers BDR da BRAPI"""
     try:
-        # Obtendo lista de tickers BDR da BRAPI
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
         r.raise_for_status()
@@ -48,17 +48,70 @@ def obter_dados_brapi():
             dados = response_data
         else:
             st.error("Formato de resposta da BRAPI inesperado")
-            return [], {}
+            return []
         
         # Filtrar apenas BDRs
         bdrs_raw = [d for d in dados if d.get('stock', '').endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
         
-        return lista_tickers, {}
+        return lista_tickers
         
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
-        return [], {}
+        return []
+
+@st.cache_data(ttl=3600)
+def obter_nomes_brapi(tickers):
+    """Busca os nomes das empresas usando o endpoint individual da BRAPI"""
+    mapa_nomes = {}
+    total = len(tickers)
+    
+    if total == 0:
+        return mapa_nomes
+    
+    progresso = st.progress(0, text="Buscando nomes das empresas na BRAPI...")
+    
+    # Processar em lotes para otimizar
+    for i, ticker in enumerate(tickers):
+        try:
+            # Atualizar progresso a cada 10 tickers
+            if i % 10 == 0:
+                progresso.progress(min((i + 1) / total, 1.0), 
+                                  text=f"BRAPI: {i+1}/{total} empresas...")
+            
+            # Buscar dados individuais do ticker
+            url = f"https://brapi.dev/api/quote/{ticker}?token={BRAPI_API_TOKEN}"
+            r = requests.get(url, timeout=10)
+            
+            if r.status_code == 200:
+                data = r.json()
+                
+                # Extrair o nome do resultado
+                if 'results' in data and len(data['results']) > 0:
+                    resultado = data['results'][0]
+                    
+                    # Pegar longName e limpar
+                    long_name = resultado.get('longName', '')
+                    
+                    if long_name and long_name != ticker:
+                        # Limpar o nome removendo a parte técnica do BDR
+                        # Ex: "Apple Inc. Shs Unsponsored Brazilian..." -> "Apple Inc."
+                        nome_limpo = long_name.split(' Shs ')[0].split(' BDR')[0]
+                        mapa_nomes[ticker] = nome_limpo
+                    else:
+                        mapa_nomes[ticker] = ticker
+                else:
+                    mapa_nomes[ticker] = ticker
+            else:
+                mapa_nomes[ticker] = ticker
+                
+        except Exception as e:
+            # Em caso de erro, usar o ticker
+            mapa_nomes[ticker] = ticker
+            continue
+    
+    progresso.empty()
+    return mapa_nomes
 
 @st.cache_data(ttl=1800)
 def buscar_dados(tickers):
@@ -340,7 +393,7 @@ st.markdown("Rastreamento de BDRs em queda focado em **Reversão** (Sobrevenda).
 
 if st.button("🔄 Atualizar Análise", type="primary"):
     with st.spinner("Conectando à API e baixando dados..."):
-        lista_bdrs, _ = obter_dados_brapi()
+        lista_bdrs = obter_dados_brapi()
         
         if not lista_bdrs:
             st.error("Não foi possível obter lista de BDRs da BRAPI")
@@ -352,9 +405,13 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
             st.stop()
         
-        # Buscar nomes do Yahoo Finance
+        # Buscar nomes das empresas que temos dados
         tickers_com_dados = df.columns.get_level_values(1).unique().tolist()
-        mapa_nomes = obter_nomes_yfinance(tickers_com_dados)
+        mapa_nomes = obter_nomes_brapi(tickers_com_dados)
+        
+        # Mostrar estatísticas
+        nomes_obtidos = sum(1 for t in tickers_com_dados if mapa_nomes.get(t, t) != t)
+        st.success(f"✓ {nomes_obtidos}/{len(tickers_com_dados)} nomes de empresas obtidos da BRAPI!")
         
     if not df.empty:
         df_calc = calcular_indicadores(df)
