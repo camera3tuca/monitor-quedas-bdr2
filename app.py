@@ -35,17 +35,49 @@ except:
 @st.cache_data(ttl=3600)
 def obter_dados_brapi():
     try:
-        # CORREÇÃO: Adicionado o token na URL
+        # Obtendo lista de BDRs
         url = f"https://brapi.dev/api/quote/list?token={BRAPI_API_TOKEN}"
         r = requests.get(url, timeout=30)
-        
-        # Garante que a requisição funcionou
         r.raise_for_status()
         
-        dados = r.json().get('stocks', [])
-        bdrs_raw = [d for d in dados if d['stock'].endswith(TERMINACOES_BDR)]
+        # A API retorna diretamente uma lista ou um objeto com 'stocks'
+        response_data = r.json()
+        
+        # Verificar se é uma lista direta ou objeto com 'stocks'
+        if isinstance(response_data, list):
+            dados = response_data
+        else:
+            dados = response_data.get('stocks', [])
+        
+        # Filtrar apenas BDRs
+        bdrs_raw = [d for d in dados if d.get('stock', '').endswith(TERMINACOES_BDR)]
         lista_tickers = [d['stock'] for d in bdrs_raw]
-        mapa_nomes = {d['stock']: d.get('name', d['stock']) for d in bdrs_raw}
+        
+        # Buscar nomes completos individualmente para garantir dados atualizados
+        mapa_nomes = {}
+        for ticker in lista_tickers[:10]:  # Teste com primeiros 10 para não sobrecarregar
+            try:
+                url_quote = f"https://brapi.dev/api/quote/{ticker}?token={BRAPI_API_TOKEN}"
+                r_quote = requests.get(url_quote, timeout=10)
+                if r_quote.status_code == 200:
+                    quote_data = r_quote.json()
+                    # A API pode retornar 'results' como lista
+                    if 'results' in quote_data and len(quote_data['results']) > 0:
+                        nome = quote_data['results'][0].get('longName') or quote_data['results'][0].get('shortName') or ticker
+                    else:
+                        nome = quote_data.get('longName') or quote_data.get('shortName') or ticker
+                    mapa_nomes[ticker] = nome
+                else:
+                    mapa_nomes[ticker] = ticker
+            except:
+                mapa_nomes[ticker] = ticker
+        
+        # Para os demais, usar o nome da lista ou o ticker
+        for d in bdrs_raw:
+            ticker = d['stock']
+            if ticker not in mapa_nomes:
+                mapa_nomes[ticker] = d.get('name') or d.get('longName') or d.get('shortName') or ticker
+        
         return lista_tickers, mapa_nomes
     except Exception as e:
         st.error(f"Erro ao buscar BRAPI: {e}")
