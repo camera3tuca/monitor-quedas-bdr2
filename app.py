@@ -69,19 +69,17 @@ def obter_nomes_brapi(tickers):
     if total == 0:
         return mapa_nomes
     
-    progresso = st.progress(0, text="Buscando nomes das empresas na BRAPI...")
+    progresso = st.progress(0, text=f"Buscando nomes de {total} empresas...")
     
-    # Processar em lotes para otimizar
+    # Processar todos os tickers
     for i, ticker in enumerate(tickers):
         try:
-            # Atualizar progresso a cada 10 tickers
-            if i % 10 == 0:
-                progresso.progress(min((i + 1) / total, 1.0), 
-                                  text=f"BRAPI: {i+1}/{total} empresas...")
+            # Atualizar progresso
+            progresso.progress((i + 1) / total, text=f"Buscando: {ticker} ({i+1}/{total})")
             
             # Buscar dados individuais do ticker
             url = f"https://brapi.dev/api/quote/{ticker}?token={BRAPI_API_TOKEN}"
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, timeout=5)  # Timeout reduzido para 5s
             
             if r.status_code == 200:
                 data = r.json()
@@ -89,15 +87,12 @@ def obter_nomes_brapi(tickers):
                 # Extrair o nome do resultado
                 if 'results' in data and len(data['results']) > 0:
                     resultado = data['results'][0]
-                    
-                    # Pegar longName e limpar
                     long_name = resultado.get('longName', '')
                     
                     if long_name and long_name != ticker:
                         # Limpar o nome removendo a parte técnica do BDR
-                        # Ex: "Apple Inc. Shs Unsponsored Brazilian..." -> "Apple Inc."
-                        nome_limpo = long_name.split(' Shs ')[0].split(' BDR')[0]
-                        mapa_nomes[ticker] = nome_limpo
+                        nome_limpo = long_name.split(' Shs ')[0].split(' BDR')[0].split(' -')[0]
+                        mapa_nomes[ticker] = nome_limpo.strip()
                     else:
                         mapa_nomes[ticker] = ticker
                 else:
@@ -105,8 +100,7 @@ def obter_nomes_brapi(tickers):
             else:
                 mapa_nomes[ticker] = ticker
                 
-        except Exception as e:
-            # Em caso de erro, usar o ticker
+        except:
             mapa_nomes[ticker] = ticker
             continue
     
@@ -405,22 +399,43 @@ if st.button("🔄 Atualizar Análise", type="primary"):
             st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
             st.stop()
         
-        # Buscar nomes das empresas que temos dados
-        tickers_com_dados = df.columns.get_level_values(1).unique().tolist()
-        mapa_nomes = obter_nomes_brapi(tickers_com_dados)
-        
-        # Mostrar estatísticas
-        nomes_obtidos = sum(1 for t in tickers_com_dados if mapa_nomes.get(t, t) != t)
-        st.success(f"✓ {nomes_obtidos}/{len(tickers_com_dados)} nomes de empresas obtidos da BRAPI!")
-        
-    if not df.empty:
+    # Calcular indicadores SEM buscar nomes ainda
+    with st.spinner("Calculando indicadores técnicos..."):
         df_calc = calcular_indicadores(df)
-        oportunidades = analisar_oportunidades(df_calc, mapa_nomes)
+        
+    # Analisar oportunidades SEM nomes (vai usar ticker temporariamente)
+    with st.spinner("Analisando oportunidades..."):
+        oportunidades = analisar_oportunidades(df_calc, {})
         
         if oportunidades:
-            df_res = pd.DataFrame(oportunidades)
+            # Buscar nomes APENAS dos BDRs encontrados (muito mais rápido!)
+            tickers_encontrados = [opp['Ticker'] for opp in oportunidades]
             
-            # ORDENAÇÃO: Queda do Dia
+            with st.spinner(f"Buscando nomes de {len(tickers_encontrados)} empresas..."):
+                mapa_nomes = obter_nomes_brapi(tickers_encontrados)
+            
+            # Atualizar os nomes nas oportunidades
+            for opp in oportunidades:
+                ticker = opp['Ticker']
+                nome_completo = mapa_nomes.get(ticker, ticker)
+                
+                # Processar o nome
+                if nome_completo == ticker:
+                    opp['Empresa'] = ticker
+                else:
+                    palavras = nome_completo.split()
+                    ignore_list = ['INC', 'CORP', 'LTD', 'S.A.', 'GMBH', 'PLC', 'GROUP', 'HOLDINGS', 'CO', 'LLC']
+                    palavras_uteis = [p for p in palavras if p.upper().replace('.', '').replace(',', '') not in ignore_list]
+                    
+                    if len(palavras_uteis) > 0:
+                        nome_curto = " ".join(palavras_uteis[:2])
+                    else:
+                        nome_curto = nome_completo
+                    
+                    opp['Empresa'] = nome_curto.replace(',', '').title()
+            
+            # Criar DataFrame e ordenar
+            df_res = pd.DataFrame(oportunidades)
             df_res = df_res.sort_values(by='Queda_Dia', ascending=True)
             
             st.success(f"{len(oportunidades)} oportunidades encontradas!")
@@ -480,5 +495,3 @@ if st.button("🔄 Atualizar Análise", type="primary"):
                 except Exception: continue
         else:
             st.warning("Nenhuma BDR em queda encontrada hoje.")
-    else:
-        st.error("Erro ao carregar dados. Se o Yahoo tiver bloqueado, aguarde alguns minutos.")
