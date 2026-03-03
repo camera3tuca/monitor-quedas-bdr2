@@ -6,4 +6,8 @@ matplotlib
 seaborn
 requests
 pytz
-yahooquery
+
+# OpenBB Platform — providers gratuitos
+openbb
+openbb-yfinance
+openbb-fmp
